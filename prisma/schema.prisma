@@ -1,0 +1,506 @@
+// Shaggar City Mayor's Office Digital Management System - database schema
+// Provider is switched between "sqlite" (local dev) and "postgresql" (production)
+// with: npm run db:provider -- postgresql
+// Status/type fields are strings validated in src/shared/constants.ts so the schema
+// stays portable across both databases.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- Access control
+
+model Role {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  description String?
+  isSystem    Boolean          @default(true)
+  permissions RolePermission[]
+  users       User[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  module      String
+  description String?
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  email               String    @unique
+  phone               String?
+  passwordHash        String
+  fullName            String
+  title               String? // official position, e.g. "Deputy Mayor - Economic Affairs"
+  roleId              String
+  role                Role      @relation(fields: [roleId], references: [id])
+  departmentId        String?
+  department          Department? @relation(fields: [departmentId], references: [id])
+  isActive            Boolean   @default(true)
+  acceptsAppointments Boolean   @default(false)
+  preferredLanguage   String    @default("en")
+  mustChangePassword  Boolean   @default(false)
+  mfaEnabled          Boolean   @default(false)
+  mfaSecret           String?
+  failedLoginCount    Int       @default(0)
+  lockedUntil         DateTime?
+  lastLoginAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  citizen               Citizen?        @relation("CitizenAccount")
+  sessions              Session[]
+  notifications         Notification[]
+  officialAppointments  Appointment[]   @relation("AppointmentOfficial")
+  casesAsOfficer        Case[]          @relation("CaseOfficer")
+  casesAsDeptOfficer    Case[]          @relation("CaseDeptOfficer")
+  casesAsExecutive      Case[]          @relation("CaseExecutive")
+  forwardingsSent       CaseForwarding[] @relation("ForwardFrom")
+  forwardingsReceived   CaseForwarding[] @relation("ForwardTo")
+  decisions             ExecutiveDecision[] @relation("DecisionExecutive")
+  delegatedDecisions    ExecutiveDecision[] @relation("DecisionDelegate")
+  reservations          Reservation[]   @relation("ReservationRequester")
+  managedFacilities     Facility[]
+  auditLogs             AuditLog[]
+
+  @@index([roleId])
+  @@index([departmentId])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  lastSeenAt DateTime @default(now())
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------- Directory
+
+model SubCity {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  name        String       @unique
+  isActive    Boolean      @default(true)
+  departments Department[]
+  citizens    Citizen[]
+  cases       Case[]
+  createdAt   DateTime     @default(now())
+}
+
+model Department {
+  id         String   @id @default(cuid())
+  code       String   @unique
+  name       String
+  type       String   @default("DEPARTMENT") // DEPARTMENT | SUBCITY_ADMIN | OFFICE
+  subCityId  String?
+  subCity    SubCity? @relation(fields: [subCityId], references: [id])
+  headName   String?
+  phone      String?
+  email      String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  users       User[]
+  cases       Case[]
+  assignments CaseAssignment[]
+  responses   DepartmentResponse[]
+  categories  CaseCategory[]
+}
+
+model Citizen {
+  id           String    @id @default(cuid())
+  userId       String?   @unique
+  user         User?     @relation("CitizenAccount", fields: [userId], references: [id])
+  fullName     String
+  phone        String
+  email        String?
+  gender       String?
+  nationalId   String?
+  subCityId    String?
+  subCity      SubCity?  @relation(fields: [subCityId], references: [id])
+  woreda       String?
+  kebele       String?
+  address      String?
+  registeredById String? // staff member who registered a walk-in citizen
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  cases        Case[]
+  appointments Appointment[]
+  feedback     Feedback[]
+
+  @@index([phone])
+}
+
+// ---------------------------------------------------------------- Cases
+
+model CaseCategory {
+  id                  String      @id @default(cuid())
+  code                String      @unique
+  name                String
+  nameOm              String?
+  nameAm              String?
+  description         String?
+  defaultDepartmentId String?
+  defaultDepartment   Department? @relation(fields: [defaultDepartmentId], references: [id])
+  defaultDeadlineDays Int         @default(15)
+  isActive            Boolean     @default(true)
+  cases               Case[]
+}
+
+model Case {
+  id                String    @id @default(cuid())
+  referenceNo       String    @unique
+  citizenId         String
+  citizen           Citizen   @relation(fields: [citizenId], references: [id])
+  type              String    @default("CASE") // CASE | COMPLAINT | PETITION | SUGGESTION | FEEDBACK
+  title             String
+  description       String
+  categoryId        String
+  category          CaseCategory @relation(fields: [categoryId], references: [id])
+  channel           String    @default("ONLINE") // ONLINE | WALK_IN | MAIL | PHONE
+  priority          String    @default("NORMAL") // LOW | NORMAL | HIGH | URGENT
+  confidentiality   String    @default("NORMAL") // NORMAL | CONFIDENTIAL | STRICT
+  status            String    @default("SUBMITTED")
+  subCityId         String?
+  subCity           SubCity?  @relation(fields: [subCityId], references: [id])
+  departmentId      String?
+  department        Department? @relation(fields: [departmentId], references: [id])
+  assignedOfficerId String?
+  assignedOfficer   User?     @relation("CaseOfficer", fields: [assignedOfficerId], references: [id])
+  deptOfficerId     String?
+  deptOfficer       User?     @relation("CaseDeptOfficer", fields: [deptOfficerId], references: [id])
+  executiveId       String?
+  executive         User?     @relation("CaseExecutive", fields: [executiveId], references: [id])
+  handling          String?   // ADMINISTRATIVE | DEPARTMENT | EXECUTIVE
+  deadline          DateTime?
+  assessment        String?
+  recommendation    String?
+  resolution        String?
+  registeredById    String?
+  verifiedAt        DateTime?
+  closedAt          DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  assignments  CaseAssignment[]
+  forwardings  CaseForwarding[]
+  actions      CaseAction[]
+  decisions    ExecutiveDecision[]
+  responses    DepartmentResponse[]
+  documents    Document[]
+  feedback     Feedback[]
+  correspondence Correspondence[]
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([departmentId])
+  @@index([citizenId])
+  @@index([executiveId])
+  @@index([createdAt])
+}
+
+model CaseAssignment {
+  id                String     @id @default(cuid())
+  caseId            String
+  case              Case       @relation(fields: [caseId], references: [id])
+  departmentId      String
+  department        Department @relation(fields: [departmentId], references: [id])
+  assignedOfficerId String?
+  assignedById      String
+  reason            String
+  deadline          DateTime?
+  status            String     @default("ACTIVE") // ACTIVE | COMPLETED | REASSIGNED
+  createdAt         DateTime   @default(now())
+
+  @@index([caseId])
+  @@index([departmentId])
+}
+
+model CaseForwarding {
+  id                String   @id @default(cuid())
+  caseId            String
+  case              Case     @relation(fields: [caseId], references: [id])
+  fromUserId        String
+  fromUser          User     @relation("ForwardFrom", fields: [fromUserId], references: [id])
+  toUserId          String
+  toUser            User     @relation("ForwardTo", fields: [toUserId], references: [id])
+  reason            String
+  summary           String
+  recommendedAction String?
+  status            String   @default("PENDING") // PENDING | ACTED
+  createdAt         DateTime @default(now())
+
+  @@index([caseId])
+  @@index([toUserId])
+}
+
+// Append-only history (update/delete blocked in src/server/db.ts)
+model CaseAction {
+  id         String   @id @default(cuid())
+  caseId     String
+  case       Case     @relation(fields: [caseId], references: [id])
+  actorId    String?
+  actorName  String?
+  action     String
+  fromStatus String?
+  toStatus   String?
+  note       String?
+  isPublic   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([caseId])
+}
+
+// Append-only executive record (update/delete blocked in src/server/db.ts)
+model ExecutiveDecision {
+  id                   String   @id @default(cuid())
+  caseId               String
+  case                 Case     @relation(fields: [caseId], references: [id])
+  forwardingId         String?
+  executiveId          String
+  executive            User     @relation("DecisionExecutive", fields: [executiveId], references: [id])
+  decisionType         String   // INSTRUCTION | APPROVE_RECOMMENDATION | RETURN_FOR_REVIEW | DELEGATE | FINAL_DECISION
+  instruction          String
+  assignedDepartmentId String?
+  delegatedToId        String?
+  delegatedTo          User?    @relation("DecisionDelegate", fields: [delegatedToId], references: [id])
+  deadline             DateTime?
+  createdAt            DateTime @default(now())
+
+  @@index([caseId])
+}
+
+model DepartmentResponse {
+  id           String     @id @default(cuid())
+  caseId       String
+  case         Case       @relation(fields: [caseId], references: [id])
+  assignmentId String?
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id])
+  responderId  String
+  responderName String?
+  responseType String     // PROGRESS | COMPLETED | INFO_REQUEST
+  content      String
+  createdAt    DateTime   @default(now())
+
+  @@index([caseId])
+}
+
+model Feedback {
+  id        String   @id @default(cuid())
+  caseId    String?
+  case      Case?    @relation(fields: [caseId], references: [id])
+  citizenId String
+  citizen   Citizen  @relation(fields: [citizenId], references: [id])
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([caseId, citizenId])
+}
+
+// ---------------------------------------------------------------- Appointments & reservations
+
+model Appointment {
+  id           String    @id @default(cuid())
+  referenceNo  String    @unique
+  citizenId    String
+  citizen      Citizen   @relation(fields: [citizenId], references: [id])
+  officialId   String
+  official     User      @relation("AppointmentOfficial", fields: [officialId], references: [id])
+  category     String
+  purpose      String
+  startAt      DateTime
+  endAt        DateTime
+  status       String    @default("REQUESTED") // REQUESTED | APPROVED | REJECTED | CANCELLED | COMPLETED | NO_SHOW
+  channel      String    @default("ONLINE") // ONLINE | WALK_IN | PHONE
+  decisionNote String?
+  decidedById  String?
+  decidedAt    DateTime?
+  checkedInAt  DateTime?
+  outcome      String?
+  followUp     String?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  documents    Document[]
+
+  @@index([officialId, startAt])
+  @@index([citizenId])
+  @@index([status])
+}
+
+model Facility {
+  id           String        @id @default(cuid())
+  name         String        @unique
+  type         String        // CONFERENCE_ROOM | MEETING_ROOM | HALL | EVENT_SPACE | OTHER
+  capacity     Int           @default(10)
+  location     String?
+  description  String?
+  managerId    String?
+  manager      User?         @relation(fields: [managerId], references: [id])
+  isActive     Boolean       @default(true)
+  reservations Reservation[]
+  createdAt    DateTime      @default(now())
+}
+
+model Reservation {
+  id            String    @id @default(cuid())
+  referenceNo   String    @unique
+  facilityId    String
+  facility      Facility  @relation(fields: [facilityId], references: [id])
+  requestedById String
+  requestedBy   User      @relation("ReservationRequester", fields: [requestedById], references: [id])
+  title         String
+  purpose       String?
+  attendees     Int       @default(1)
+  startAt       DateTime
+  endAt         DateTime
+  status        String    @default("PENDING") // PENDING | APPROVED | REJECTED | CANCELLED
+  decisionNote  String?
+  decidedById   String?
+  decidedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([facilityId, startAt])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------- Correspondence & documents
+
+model Correspondence {
+  id              String    @id @default(cuid())
+  documentNo      String    @unique
+  direction       String    // INCOMING | OUTGOING
+  subject         String
+  summary         String?
+  senderOrg       String
+  recipientOrg    String
+  letterDate      DateTime
+  receivedDate    DateTime?
+  status          String    @default("REGISTERED") // REGISTERED | UNDER_REVIEW | APPROVED | DISPATCHED | ARCHIVED
+  confidentiality String    @default("NORMAL")
+  caseId          String?
+  case            Case?     @relation(fields: [caseId], references: [id])
+  handlerId       String?
+  createdById     String
+  approvedById    String?
+  approvedAt      DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  history         CorrespondenceAction[]
+  documents       Document[]
+
+  @@index([direction, status])
+}
+
+model CorrespondenceAction {
+  id               String         @id @default(cuid())
+  correspondenceId String
+  correspondence   Correspondence @relation(fields: [correspondenceId], references: [id])
+  actorId          String
+  actorName        String?
+  action           String
+  note             String?
+  createdAt        DateTime       @default(now())
+
+  @@index([correspondenceId])
+}
+
+model Document {
+  id               String          @id @default(cuid())
+  caseId           String?
+  case             Case?           @relation(fields: [caseId], references: [id])
+  correspondenceId String?
+  correspondence   Correspondence? @relation(fields: [correspondenceId], references: [id])
+  appointmentId    String?
+  appointment      Appointment?    @relation(fields: [appointmentId], references: [id])
+  fileName         String
+  storedName       String          @unique
+  mimeType         String
+  size             Int
+  sha256           String
+  uploadedById     String?
+  createdAt        DateTime        @default(now())
+
+  @@index([caseId])
+  @@index([correspondenceId])
+}
+
+// ---------------------------------------------------------------- Notifications, audit, counters
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model OutboundMessage {
+  id        String   @id @default(cuid())
+  channel   String   // SMS | EMAIL
+  recipient String
+  subject   String?
+  body      String
+  status    String   @default("QUEUED") // QUEUED | SENT | FAILED | SKIPPED
+  error     String?
+  createdAt DateTime @default(now())
+}
+
+// Append-only (update/delete blocked in src/server/db.ts)
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+model Counter {
+  key   String @id
+  value Int    @default(0)
+}

@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: smo
+      POSTGRES_USER: smo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smo"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://smo:${POSTGRES_PASSWORD}@db:5432/smo
+      STORAGE_DIR: /app/storage
+      DEMO_MODE: ${DEMO_MODE:-false}
+      SESSION_HOURS: ${SESSION_HOURS:-8}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
+      JOB_TOKEN: ${JOB_TOKEN:-}
+      SMS_PROVIDER_URL: ${SMS_PROVIDER_URL:-}
+      SMS_PROVIDER_TOKEN: ${SMS_PROVIDER_TOKEN:-}
+      SMS_SENDER_ID: ${SMS_SENDER_ID:-}
+      EMAIL_WEBHOOK_URL: ${EMAIL_WEBHOOK_URL:-}
+      EMAIL_WEBHOOK_TOKEN: ${EMAIL_WEBHOOK_TOKEN:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+    volumes:
+      - uploads:/app/storage
+
+volumes:
+  pgdata:
+  uploads:

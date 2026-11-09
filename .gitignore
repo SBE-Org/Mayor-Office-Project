@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# build output
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# local databases
+prisma/*.db
+prisma/*.db-journal
+*.db
+*.db-journal
+
+# uploaded documents and backups (never commit citizen data)
+storage/*
+!storage/.gitkeep
+storage-test/
+backups/
+
+# secrets
+.env
+.env.local
+.env.*.local
+
+# editor / tools
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+npm-debug.log*
