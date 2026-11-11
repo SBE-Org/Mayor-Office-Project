@@ -16,14 +16,14 @@ export const PERMISSIONS = {
   "case.view.all": { module: "Cases", name: "View all non-confidential cases" },
   "case.view.confidential": { module: "Cases", name: "View confidential and strictly confidential cases" },
   "case.view.department": { module: "Cases", name: "View cases assigned to own department" },
-  "case.view.assigned": { module: "Cases", name: "View cases personally assigned" },
+  "case.view.assigned": { module: "Cases", name: "View cases personally assigned (case officer)" },
   "case.view.forwarded": { module: "Cases", name: "View cases forwarded to self for executive attention" },
   "case.review": { module: "Cases", name: "Review, categorise, prioritise and assess cases" },
   "case.assign": { module: "Cases", name: "Assign cases to departments / sub-cities and set deadlines" },
   "case.forward": { module: "Cases", name: "Forward cases to the Mayor or a Deputy Mayor" },
   "case.decide": { module: "Cases", name: "Issue executive instructions and decisions" },
   "case.respond": { module: "Cases", name: "Submit department responses" },
-  "case.dept.assign": { module: "Cases", name: "Allocate department cases to department officers" },
+  "case.dept.assign": { module: "Cases", name: "Allocate department cases to individual department staff" },
   "case.close": { module: "Cases", name: "Verify outcomes and close cases" },
   "case.reopen": { module: "Cases", name: "Reopen closed cases" },
 
@@ -59,18 +59,25 @@ export const ROLES = {
   SUPER_ADMIN: { name: "Super Administrator", description: "System configuration, users and roles. No access to case content by default." },
   MAYOR: { name: "Mayor", description: "Executive authority. Reviews forwarded cases and records decisions." },
   DEPUTY_MAYOR: { name: "Deputy Mayor", description: "Executive authority for cases and appointments forwarded or delegated to them." },
-  CHIEF_OF_STAFF: { name: "Head of Mayor's Office (Chief of Staff)", description: "Runs the Office of the Mayor: review, forwarding, assignment and oversight." },
-  SECRETARY: { name: "Mayor's Office Secretary", description: "Manages the Mayor's calendar, appointments, reservations and correspondence." },
-  OFFICE_ASSISTANT: { name: "Mayor's Office Assistant", description: "Front desk: registers walk-in visitors and cases; no review or forwarding." },
-  CASE_REGISTRATION_OFFICER: { name: "Case Registration Officer", description: "Registers and verifies incoming cases." },
-  CASE_REVIEW_OFFICER: { name: "Case Review Officer", description: "Reviews, assigns and forwards cases." },
-  DEPARTMENT_HEAD: { name: "Department Head", description: "Receives and responds to department cases; allocates to officers." },
-  DEPARTMENT_OFFICER: { name: "Department Officer", description: "Works on cases personally assigned." },
-  DOCUMENT_OFFICER: { name: "Document Management Officer", description: "Registers and archives official correspondence." },
-  CITIZEN: { name: "Citizen", description: "Public portal user." },
+  CHIEF_OF_STAFF: { name: "Head of Mayor's Office (Chief of Staff)", description: "Runs the Office of the Mayor: registration, review, case-officer assignment, forwarding, department assignment and oversight." },
+  SECRETARY: { name: "Mayor's Office Secretary", description: "Registers walk-in cases and visitors, manages the Mayor's calendar, appointments, reservations and correspondence; can act as case officer." },
+  DEPARTMENT_HEAD: { name: "Department Head", description: "Receives, works on and responds to cases assigned to the department." },
+  CITIZEN: { name: "Citizen", description: "Public portal user (case owner)." },
 } as const;
 
 export type RoleCode = keyof typeof ROLES;
+
+/**
+ * Roles removed in the Nov 2026 review and the role their users are moved to
+ * (applied automatically by the seed script: npm run db:seed).
+ */
+export const RETIRED_ROLES: Record<string, RoleCode> = {
+  OFFICE_ASSISTANT: "SECRETARY",
+  CASE_REGISTRATION_OFFICER: "SECRETARY",
+  DOCUMENT_OFFICER: "SECRETARY",
+  CASE_REVIEW_OFFICER: "CHIEF_OF_STAFF",
+  DEPARTMENT_OFFICER: "DEPARTMENT_HEAD",
+};
 
 const OFFICE_COMMON: PermissionCode[] = ["dashboard.office", "department.view"];
 
@@ -89,30 +96,33 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleCode, PermissionCode[]> = {
     "correspondence.view", "department.view", "report.view",
   ],
   CHIEF_OF_STAFF: [
-    ...OFFICE_COMMON, "case.register", "case.view.all", "case.view.confidential", "case.review", "case.assign",
+    ...OFFICE_COMMON, "case.register", "case.view.all", "case.view.confidential", "case.view.assigned", "case.review", "case.assign",
     "case.forward", "case.close", "case.reopen", "appointment.view", "appointment.manage", "appointment.walkin",
     "appointment.own", "reservation.request", "reservation.manage", "correspondence.view", "correspondence.manage",
     "correspondence.approve", "report.view", "audit.view",
   ],
   SECRETARY: [
-    ...OFFICE_COMMON, "case.register", "case.view.all", "appointment.view", "appointment.manage", "appointment.walkin",
-    "reservation.request", "reservation.manage", "correspondence.view", "correspondence.manage",
-  ],
-  OFFICE_ASSISTANT: [
-    ...OFFICE_COMMON, "case.register", "appointment.view", "appointment.walkin", "reservation.request", "correspondence.view",
-  ],
-  CASE_REGISTRATION_OFFICER: [...OFFICE_COMMON, "case.register", "case.view.all", "appointment.walkin"],
-  CASE_REVIEW_OFFICER: [
-    ...OFFICE_COMMON, "case.register", "case.view.all", "case.view.assigned", "case.review", "case.assign",
-    "case.forward", "case.close", "case.reopen", "report.view",
+    ...OFFICE_COMMON, "case.register", "case.view.all", "case.view.assigned", "appointment.view", "appointment.manage", "appointment.walkin",
+    "appointment.own", "reservation.request", "reservation.manage", "correspondence.view", "correspondence.manage",
   ],
   DEPARTMENT_HEAD: [
-    "dashboard.department", "case.view.department", "case.respond", "case.dept.assign", "department.view",
-    "reservation.request", "report.view",
+    "dashboard.department", "case.view.department", "case.respond", "department.view", "reservation.request", "report.view",
   ],
-  DEPARTMENT_OFFICER: ["dashboard.department", "case.view.assigned", "case.respond"],
-  DOCUMENT_OFFICER: [...OFFICE_COMMON, "correspondence.view", "correspondence.manage"],
   CITIZEN: ["portal.citizen"],
 };
+
+/**
+ * Permissions added to the defaults after a role already existed. The seed grants them
+ * once to existing databases (without touching other changes the administrator made).
+ */
+export const PERMISSION_UPGRADES: { key: string; grants: Partial<Record<RoleCode, PermissionCode[]>> }[] = [
+  {
+    key: "2026-11-roles",
+    grants: {
+      CHIEF_OF_STAFF: ["case.view.assigned"],
+      SECRETARY: ["case.view.assigned", "appointment.own", "correspondence.manage"],
+    },
+  },
+];
 
 export const EXECUTIVE_ROLES: RoleCode[] = ["MAYOR", "DEPUTY_MAYOR"];

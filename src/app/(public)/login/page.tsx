@@ -13,12 +13,7 @@ const DEMO = [
   ["Deputy Mayor (Social)", "deputy.social@demo.local"],
   ["Head of Mayor's Office", "chief@demo.local"],
   ["Mayor's Secretary", "secretary@demo.local"],
-  ["Office Assistant", "assistant@demo.local"],
-  ["Case Registration Officer", "registrar@demo.local"],
-  ["Case Review Officer", "reviewer@demo.local"],
-  ["Document Officer", "documents@demo.local"],
   ["Department Head (Land)", "land.head@demo.local"],
-  ["Department Officer (Land)", "land.officer@demo.local"],
   ["Super Administrator", "admin@demo.local"],
   ["Citizen", "citizen@demo.local"],
 ];

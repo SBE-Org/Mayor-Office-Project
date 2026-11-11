@@ -5,7 +5,7 @@ Defined in `prisma/schema.prisma`. The same schema runs on SQLite (development) 
 | Area | Tables | Key relationships |
 |---|---|---|
 | Access control | `Role`, `Permission`, `RolePermission`, `User`, `Session` | User → one Role; Role ↔ Permission (many-to-many); User → Department (department staff) |
-| Directory | `SubCity`, `Department`, `Citizen` | Department → SubCity (optional); Citizen → User (optional; walk-ins have no account) |
+| Directory | `SubCity`, `Woreda`, `Kebele`, `Department`, `Citizen` | Woreda → SubCity; Kebele → Woreda (admin-managed drop-down lists); SubCity holds the sub-city mayor; Department (office) → SubCity (optional), code generated as OFF-###; Citizen → User (optional; walk-ins have no account, and are linked when an account with the same name and phone is created); Citizen stores woreda/kebele by name |
 | Cases | `CaseCategory`, `Case`, `CaseAssignment`, `CaseForwarding`, `CaseAction`, `ExecutiveDecision`, `DepartmentResponse`, `Feedback` | Case → Citizen, Category, Department, case officer, department officer, current executive; everything else → Case |
 | Scheduling | `Appointment`, `Facility`, `Reservation` | Appointment → Citizen and official (User); Reservation → Facility and requester |
 | Records | `Correspondence`, `CorrespondenceAction`, `Document` | Document → Case, Correspondence or Appointment |

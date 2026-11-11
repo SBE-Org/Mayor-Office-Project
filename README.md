@@ -29,11 +29,7 @@ Every demo account uses the password `Demo@2026pass`.
 | Deputy Mayor (Social) | deputy.social@demo.local |
 | Head of Mayor's Office (Chief of Staff) | chief@demo.local |
 | Mayor's Office Secretary | secretary@demo.local |
-| Mayor's Office Assistant | assistant@demo.local |
-| Case Registration Officer | registrar@demo.local |
-| Case Review Officer | reviewer@demo.local |
-| Document Management Officer | documents@demo.local |
-| Department Head (Land) / Officer | land.head@demo.local / land.officer@demo.local |
+| Department Head (Land) | land.head@demo.local |
 | Department Head (Infrastructure / Social) | infra.head@demo.local / social.head@demo.local |
 | Super Administrator | admin@demo.local |
 | Citizens | citizen@demo.local, citizen2@demo.local |
@@ -46,14 +42,9 @@ Every permission is stored in the database. A Super Administrator can change any
 |---|---|---|---|---|
 | **Mayor** | Executive dashboard | Sees all cases, including confidential ones. Decides on any forwarded case: instruct, approve, return, delegate to a Deputy Mayor, or final decision | Own calendar; views all calendars; can request rooms | Approves outgoing letters; reports; audit log |
 | **Deputy Mayor** (one account per deputy) | Executive dashboard | Sees **only** cases forwarded or delegated to them, and decides on those | Own calendar; can request rooms | Reads correspondence; reports |
-| **Head of Mayor's Office** (Chief of Staff) | Office dashboard | Registers, reviews, assigns and forwards cases to the Mayor or a Deputy; closes and reopens them; sees confidential cases | Approves, rejects and reschedules appointments; manages reservations | Manages and approves correspondence; reports; audit log |
-| **Mayor's Office Secretary** | Office dashboard | Registers cases; sees non-confidential cases; **cannot** review, forward or decide | Manages the officials' calendars: approves, rejects, reschedules, books walk-in visitors; manages reservations | Registers correspondence |
-| **Mayor's Office Assistant** | Office dashboard (front desk) | Registers walk-in cases; sees **only** cases they registered; cannot review, forward or decide | Books walk-in visitors (pending approval); checks visitors in; can request rooms | Reads correspondence |
-| Case Registration Officer | Office dashboard | Registers and verifies cases; sees non-confidential cases | Books walk-in visitors | — |
-| Case Review Officer | Office dashboard | Reviews, assigns, forwards, closes and reopens **non-confidential** cases | — | Reports |
-| Document Management Officer | Office dashboard | — | — | Registers, tracks and archives correspondence |
-| Department Head | Department dashboard | Sees their department's cases; hands cases to officers; responds | Can request rooms | Department reports |
-| Department Officer | Department dashboard | Sees cases assigned to them personally; responds | — | — |
+| **Head of Mayor's Office** (Chief of Staff) | Office dashboard | Registers, reviews, **assigns the case officer**, assigns departments and forwards cases to the Mayor or a Deputy; closes and reopens them; sees confidential cases | Approves, rejects and reschedules appointments; gives case appointments; manages reservations | Manages and approves correspondence; reports; audit log |
+| **Mayor's Office Secretary** | Office dashboard | Registers and verifies cases; sees non-confidential cases; can be **case officer**; **cannot** review, forward or decide | Manages the officials' calendars, books walk-in visitors; as case officer gives and approves case appointments; manages reservations | Registers and archives correspondence |
+| **Department Head** | Department dashboard | Sees their department's cases and responds | Can request rooms | Department reports |
 | Super Administrator | Admin dashboard | **No access to case content** | — | Users, roles, departments, categories, facilities, audit log |
 | Citizen | Citizen portal | Submits cases and tracks **only their own** | Requests and cancels their own appointments | Notifications; satisfaction ratings |
 

@@ -46,7 +46,7 @@ export function appointmentWhere(a: Actor): Prisma.AppointmentWhereInput {
   if (can(a, "portal.citizen")) return a.citizenId ? { citizenId: a.citizenId } : { id: "__none__" };
   if (can(a, "appointment.view") || can(a, "appointment.manage")) return {};
   const ors: Prisma.AppointmentWhereInput[] = [];
-  if (can(a, "appointment.own")) ors.push({ officialId: a.id });
+  ors.push({ officialId: a.id }); // own calendar, including case appointments as case officer
   if (can(a, "appointment.walkin")) ors.push({ createdById: a.id });
   return ors.length ? { OR: ors } : { id: "__none__" };
 }

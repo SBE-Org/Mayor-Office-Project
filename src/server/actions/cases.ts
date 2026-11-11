@@ -61,6 +61,11 @@ export async function assignAction(id: string, _: A, fd: FormData) {
   return run(() => svc.assignToDepartment(a, id, formObject(fd, ["departmentId", "reason", "deadline"])).then(() => "Case assigned."), paths(id));
 }
 
+export async function assignCaseOfficerAction(id: string, _: A, fd: FormData) {
+  const a = await requireActor();
+  return run(() => svc.assignCaseOfficer(a, id, str(fd, "officerId")).then(() => "Case officer assigned. The officer and the citizen have been notified."), paths(id));
+}
+
 export async function forwardAction(id: string, _: A, fd: FormData) {
   const a = await requireActor();
   return run(() => svc.forwardToExecutive(a, id, formObject(fd, ["executiveId", "summary", "recommendedAction", "reason"])).then(() => "Case forwarded for executive attention."), paths(id));
@@ -112,11 +117,13 @@ export async function feedbackAction(id: string, _: A, fd: FormData) {
   return run(() => svc.submitFeedback(a, id, Number(str(fd, "rating")), str(fd, "comment")).then(() => "Thank you for your feedback."), paths(id));
 }
 
-export async function trackAction(_: A, fd: FormData): Promise<ActionResult & { result?: Awaited<ReturnType<typeof svc.trackCase>> }> {
-  const ref = str(fd, "referenceNo");
-  const phone = str(fd, "phone");
-  if (!ref || !phone) return { ok: false, error: "Enter both fields." };
-  const r = await svc.trackCase(ref, phone);
+export type TrackState = ActionResult & { result?: svc.TrackResult; matches?: svc.TrackMatch[]; phone?: string };
+
+export async function trackAction(_: TrackState | null, fd: FormData): Promise<TrackState> {
+  const referenceNo = str(fd, "referenceNo").trim();
+  const phone = str(fd, "phone").trim();
+  if (!referenceNo && !phone) return { ok: false, error: "required" };
+  const r = await svc.trackCase({ referenceNo, phone });
   if (!r) return { ok: false, error: "notfound" };
-  return { ok: true, result: r };
+  return { ok: true, ...r, phone };
 }

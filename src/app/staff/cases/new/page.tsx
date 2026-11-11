@@ -1,5 +1,6 @@
 import { requireActor } from "@/server/auth/session";
-import { activeCategories, activeSubCities } from "@/server/services/directory";
+import { activeCategories, locationTree } from "@/server/services/directory";
+import { LocationPicker } from "@/components/LocationPicker";
 import { CASE_CHANNELS, CASE_TYPES, CONFIDENTIALITY, PRIORITIES } from "@/shared/constants";
 import { ActionForm, SubmitButton } from "@/components/ActionForm";
 import { Card, Field, PageHeader, Select, opts } from "@/components/ui";
@@ -9,7 +10,7 @@ export const metadata = { title: "Register case" };
 
 export default async function NewStaffCase() {
   await requireActor("case.register");
-  const [cats, subs] = await Promise.all([activeCategories(), activeSubCities()]);
+  const [cats, tree] = await Promise.all([activeCategories(), locationTree()]);
   return (
     <div className="max-w-4xl">
       <PageHeader title="Register a walk-in or offline case" subtitle="A unique reference number is generated automatically. Give it to the citizen for tracking." />
@@ -19,15 +20,13 @@ export default async function NewStaffCase() {
             <Field label="Full name"><input name="fullName" required minLength={3} className="input" /></Field>
             <Field label="Phone number" hint="Used by the citizen to track the case"><input name="phone" required className="input" /></Field>
             <Field label="Email (optional)"><input name="email" type="email" className="input" /></Field>
-            <Field label="Sub-city"><Select name="subCityId" placeholder="—" options={subs.map((s) => ({ value: s.id, label: s.name }))} /></Field>
-            <Field label="Woreda"><input name="woreda" className="input" /></Field>
-            <Field label="Kebele"><input name="kebele" className="input" /></Field>
+            <LocationPicker tree={tree} />
           </div>
         </Card>
         <Card title="Case">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Type"><Select name="type" required options={opts(CASE_TYPES)} /></Field>
-            <Field label="Category"><Select name="categoryId" required placeholder="Choose…" options={cats.map((c) => ({ value: c.id, label: c.name }))} /></Field>
+            <Field label="Category" hint={cats.length ? undefined : "No active categories. Add or activate them under Case categories."}><Select name="categoryId" required placeholder="Choose…" options={cats.map((c) => ({ value: c.id, label: c.name }))} /></Field>
             <Field label="Channel"><Select name="channel" defaultValue="WALK_IN" options={opts(CASE_CHANNELS.filter((c) => c !== "ONLINE"))} /></Field>
             <Field label="Priority"><Select name="priority" defaultValue="NORMAL" options={opts(PRIORITIES)} /></Field>
             <Field label="Confidentiality" hint="Confidential cases are hidden from staff without the confidential-case permission."><Select name="confidentiality" defaultValue="NORMAL" options={opts(CONFIDENTIALITY)} /></Field>

@@ -6,7 +6,9 @@ import { audit } from "@/server/audit";
 import { assertStrongPassword, dummyVerify, hashPassword, verifyPassword } from "@/server/auth/password";
 import { generateSecret, verifyTotp } from "@/server/auth/totp";
 import { ROLES, type RoleCode } from "@/shared/permissions";
-import { citizenInfoSchema } from "@/server/services/cases";
+import { citizenInfoSchema, phoneVariants } from "@/server/services/cases";
+import type { Tx } from "@/server/db";
+import { assertLocation } from "@/server/services/directory";
 
 const MAX_FAILS = 5;
 const LOCK_MIN = 15;
@@ -57,6 +59,7 @@ export async function registerCitizen(raw: unknown) {
   const input = registerSchema.parse(raw);
   if (input.password !== input.confirm) throw new AppError("Passwords do not match.");
   assertStrongPassword(input.password);
+  await assertLocation(input);
   if (await prisma.user.findUnique({ where: { email: input.email } })) throw new AppError("An account with this email already exists.");
   const role = await prisma.role.findUniqueOrThrow({ where: { code: "CITIZEN" } });
   const passwordHash = await hashPassword(input.password);
@@ -64,21 +67,48 @@ export async function registerCitizen(raw: unknown) {
     const user = await tx.user.create({
       data: { email: input.email, phone: input.phone, fullName: input.fullName, passwordHash, roleId: role.id, preferredLanguage: input.preferredLanguage },
     });
-    await tx.citizen.create({
-      data: {
-        userId: user.id,
-        fullName: input.fullName,
-        phone: input.phone,
-        email: input.email,
-        gender: input.gender || null,
-        subCityId: input.subCityId,
-        woreda: input.woreda,
-        kebele: input.kebele,
-      },
+    const { linkedCases } = await attachCitizenRecord(tx, user.id, {
+      fullName: input.fullName,
+      phone: input.phone,
+      email: input.email,
+      gender: input.gender || null,
+      subCityId: input.subCityId,
+      woreda: input.woreda,
+      kebele: input.kebele,
     });
-    await audit(tx, user.id, "CITIZEN_REGISTER", "User", user.id);
+    await audit(tx, user.id, "CITIZEN_REGISTER", "User", user.id, linkedCases ? { linkedCases } : undefined);
     return user;
   });
+}
+
+type CitizenData = { fullName: string; phone: string; email?: string; gender?: string | null; subCityId?: string; woreda?: string; kebele?: string };
+
+/**
+ * Gives a new citizen (case owner) account its citizen record. If the person was already
+ * registered at the office as a walk-in (same name and phone, no account yet), that record
+ * is linked so their earlier cases and appointments appear in the portal.
+ */
+async function attachCitizenRecord(tx: Tx, userId: string, d: CitizenData) {
+  const walkIn = await tx.citizen.findFirst({
+    where: { userId: null, phone: { in: phoneVariants(d.phone) }, fullName: d.fullName },
+    include: { _count: { select: { cases: true } } },
+  });
+  if (walkIn) {
+    await tx.citizen.update({
+      where: { id: walkIn.id },
+      data: {
+        userId,
+        email: d.email ?? walkIn.email,
+        gender: d.gender ?? walkIn.gender,
+        subCityId: d.subCityId ?? walkIn.subCityId,
+        woreda: d.woreda ?? walkIn.woreda,
+        kebele: d.kebele ?? walkIn.kebele,
+      },
+    });
+    return { citizenId: walkIn.id, linkedCases: walkIn._count.cases };
+  }
+  const c = await tx.citizen.create({ data: { ...d, userId } });
+  return { citizenId: c.id, linkedCases: 0 };
 }
 
 export async function changePassword(actor: Actor, current: string, next: string, confirm: string) {
@@ -135,7 +165,7 @@ function tempPassword() {
 }
 
 async function assertDept(roleCode: string, departmentId?: string) {
-  if ((roleCode === "DEPARTMENT_HEAD" || roleCode === "DEPARTMENT_OFFICER") && !departmentId) throw new AppError("Department roles require a department.");
+  if (roleCode === "DEPARTMENT_HEAD" && !departmentId) throw new AppError("A Department Head must belong to a department / office.");
 }
 
 export async function createStaffUser(actor: Actor, raw: unknown) {
@@ -175,6 +205,52 @@ export async function resetUserPassword(actor: Actor, id: string) {
   return pw;
 }
 
+// ---------------------------------------------------------------- case-owner (citizen) accounts created by the administrator
+
+export const citizenAccountSchema = citizenInfoSchema.extend({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address (used to sign in)"),
+  gender: z.enum(["", "FEMALE", "MALE"]).optional(),
+  preferredLanguage: z.enum(["en", "om", "am"]).default("en"),
+});
+
+/** Creates a portal account for a case owner from inside the system (temporary password). */
+export async function createCitizenAccount(actor: Actor, raw: unknown) {
+  requirePerm(actor, "user.manage");
+  const input = citizenAccountSchema.parse(raw);
+  await assertLocation(input);
+  if (await prisma.user.findUnique({ where: { email: input.email } })) throw new AppError("Email already in use.");
+  const role = await prisma.role.findUniqueOrThrow({ where: { code: "CITIZEN" } });
+  const pw = tempPassword();
+  const passwordHash = await hashPassword(pw);
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: { email: input.email, phone: input.phone, fullName: input.fullName, passwordHash, roleId: role.id, preferredLanguage: input.preferredLanguage, mustChangePassword: true },
+    });
+    const { linkedCases } = await attachCitizenRecord(tx, user.id, {
+      fullName: input.fullName,
+      phone: input.phone,
+      email: input.email,
+      gender: input.gender || null,
+      subCityId: input.subCityId,
+      woreda: input.woreda,
+      kebele: input.kebele,
+    });
+    await tx.citizen.updateMany({ where: { userId: user.id, registeredById: null }, data: { registeredById: actor.id } });
+    await audit(tx, actor.id, "CITIZEN_ACCOUNT_CREATE", "User", user.id, { email: user.email, linkedCases });
+    return { user, tempPassword: pw, linkedCases };
+  });
+}
+
+/** Activate / deactivate a case-owner account. */
+export async function setCitizenAccountActive(actor: Actor, id: string, isActive: boolean) {
+  requirePerm(actor, "user.manage");
+  const u = await prisma.user.findUnique({ where: { id }, include: { role: true } });
+  if (!u || u.role.code !== "CITIZEN") throw new NotFoundError();
+  await prisma.user.update({ where: { id }, data: { isActive } });
+  if (!isActive) await prisma.session.deleteMany({ where: { userId: id } });
+  await audit(prisma, actor.id, isActive ? "CITIZEN_ACCOUNT_ACTIVATE" : "CITIZEN_ACCOUNT_DEACTIVATE", "User", id);
+}
+
 export async function setRolePermission(actor: Actor, roleCode: string, permissionCode: string, granted: boolean) {
   requirePerm(actor, "role.manage");
   if (roleCode === "SUPER_ADMIN" && permissionCode === "role.manage" && !granted) throw new AppError("The Super Administrator must keep role management to avoid lock-out.");
@@ -184,6 +260,28 @@ export async function setRolePermission(actor: Actor, roleCode: string, permissi
   if (granted) await prisma.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId: perm.id } }, create: { roleId: role.id, permissionId: perm.id }, update: {} });
   else await prisma.rolePermission.deleteMany({ where: { roleId: role.id, permissionId: perm.id } });
   await audit(prisma, actor.id, granted ? "PERMISSION_GRANT" : "PERMISSION_REVOKE", "Role", role.id, { role: roleCode, permission: permissionCode });
+}
+
+/** Replaces the full permission set of one role (used by the Roles & permissions editor). */
+export async function setRolePermissions(actor: Actor, roleCode: string, permissionCodes: string[]) {
+  requirePerm(actor, "role.manage");
+  const role = await prisma.role.findUnique({ where: { code: roleCode }, include: { permissions: { include: { permission: true } } } });
+  if (!role) throw new NotFoundError();
+  const all = await prisma.permission.findMany();
+  const wanted = new Set(permissionCodes.filter((c) => all.some((p) => p.code === c)));
+  if (roleCode === "SUPER_ADMIN" && !wanted.has("role.manage")) throw new AppError("The Super Administrator must keep “Manage roles and permissions” to avoid lock-out.");
+  if (actor.role === roleCode && !wanted.has("role.manage")) throw new AppError("You cannot remove role management from your own role.");
+  const current = new Set(role.permissions.map((rp) => rp.permission.code));
+  const add = [...wanted].filter((c) => !current.has(c));
+  const remove = [...current].filter((c) => !wanted.has(c));
+  if (!add.length && !remove.length) return { added: 0, removed: 0 };
+  const id = (c: string) => all.find((p) => p.code === c)!.id;
+  await prisma.$transaction(async (tx) => {
+    if (remove.length) await tx.rolePermission.deleteMany({ where: { roleId: role.id, permissionId: { in: remove.map(id) } } });
+    for (const c of add) await tx.rolePermission.create({ data: { roleId: role.id, permissionId: id(c) } });
+    await audit(tx, actor.id, "ROLE_PERMISSIONS_UPDATE", "Role", role.id, { role: roleCode, granted: add, revoked: remove });
+  });
+  return { added: add.length, removed: remove.length };
 }
 
 export function roleLabel(code: string) {

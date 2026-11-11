@@ -7,6 +7,7 @@ import * as cases from "../src/server/services/cases";
 import * as appts from "../src/server/services/appointments";
 import * as rsv from "../src/server/services/reservations";
 import * as acc from "../src/server/services/accounts";
+import * as dir from "../src/server/services/directory";
 import { buildReport, parseRange } from "../src/server/services/reports";
 import { generateSecret, totp, verifyTotp } from "../src/server/auth/totp";
 import { validateUpload } from "../src/server/storage";
@@ -33,8 +34,7 @@ function nextSaturday() {
 beforeAll(async () => {
   for (const [k, e] of Object.entries({
     mayor: "mayor@demo.local", depEco: "deputy.economic@demo.local", depSoc: "deputy.social@demo.local", chief: "chief@demo.local",
-    secretary: "secretary@demo.local", assistant: "assistant@demo.local", registrar: "registrar@demo.local", reviewer: "reviewer@demo.local",
-    docs: "documents@demo.local", landHead: "land.head@demo.local", landOfficer: "land.officer@demo.local", infraHead: "infra.head@demo.local",
+    secretary: "secretary@demo.local", landHead: "land.head@demo.local", infraHead: "infra.head@demo.local",
     admin: "admin@demo.local", citizen: "citizen@demo.local", citizen2: "citizen2@demo.local",
   })) A[k] = await actor(e);
   ids.land = (await prisma.caseCategory.findUniqueOrThrow({ where: { code: "LAND" } })).id;
@@ -50,10 +50,15 @@ describe("Role-based access control", () => {
     expect(A.depEco.permissions.has("dashboard.executive")).toBe(true);
     expect(A.chief.permissions.has("dashboard.office")).toBe(true);
     expect(A.secretary.permissions.has("dashboard.office")).toBe(true);
-    expect(A.assistant.permissions.has("dashboard.office")).toBe(true);
-    expect(A.assistant.permissions.has("case.forward")).toBe(false);
+    expect(A.landHead.permissions.has("dashboard.department")).toBe(true);
+    expect(A.secretary.permissions.has("case.forward")).toBe(false);
     expect(A.secretary.permissions.has("case.decide")).toBe(false);
     expect(A.admin.permissions.has("case.view.all")).toBe(false);
+  });
+
+  it("only the six staff roles (plus Citizen) exist", async () => {
+    const codes = (await prisma.role.findMany()).map((r) => r.code).sort();
+    expect(codes).toEqual(["CHIEF_OF_STAFF", "CITIZEN", "DEPARTMENT_HEAD", "DEPUTY_MAYOR", "MAYOR", "SECRETARY", "SUPER_ADMIN"]);
   });
 
   it("citizens see only their own cases", async () => {
@@ -80,9 +85,8 @@ describe("Role-based access control", () => {
     await expect(cases.getCase(A.depEco, soc[0].id)).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it("confidential cases are hidden from the review officer and secretary but visible to the Head of Office and Mayor", async () => {
+  it("confidential cases are hidden from the secretary but visible to the Head of Office and Mayor", async () => {
     const conf = await prisma.case.findFirstOrThrow({ where: { confidentiality: "CONFIDENTIAL" } });
-    await expect(cases.getCase(A.reviewer, conf.id)).rejects.toBeInstanceOf(NotFoundError);
     await expect(cases.getCase(A.secretary, conf.id)).rejects.toBeInstanceOf(NotFoundError);
     expect((await cases.getCase(A.chief, conf.id)).id).toBe(conf.id);
     expect((await cases.getCase(A.mayor, conf.id)).id).toBe(conf.id);
@@ -92,12 +96,10 @@ describe("Role-based access control", () => {
     expect(await cases.listCases(A.admin)).toHaveLength(0);
   });
 
-  it("the office assistant can register cases but only sees cases they registered and cannot review or forward", async () => {
-    const list = await cases.listCases(A.assistant);
-    expect(list.every((c) => c.registeredById === A.assistant.id)).toBe(true);
+  it("the secretary can register cases but cannot review or forward", async () => {
     const any = await prisma.case.findFirstOrThrow({ where: { status: "AWAITING_EXECUTIVE", confidentiality: "NORMAL" } });
-    await expect(cases.forwardToExecutive(A.assistant, any.id, { executiveId: A.mayor.id, summary: "x".repeat(20), recommendedAction: "do it now", reason: "because" })).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(cases.reviewCase(A.assistant, any.id, {})).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(cases.forwardToExecutive(A.secretary, any.id, { executiveId: A.mayor.id, summary: "x".repeat(20), recommendedAction: "do it now", reason: "because" })).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(cases.reviewCase(A.secretary, any.id, {})).rejects.toBeInstanceOf(ForbiddenError);
   });
 
   it("department heads only see their own department's cases", async () => {
@@ -108,11 +110,11 @@ describe("Role-based access control", () => {
   });
 
   it("revoking a permission in the matrix takes effect immediately", async () => {
-    await acc.setRolePermission(A.admin, "OFFICE_ASSISTANT", "case.register", false);
-    const limited = await actor("assistant@demo.local");
+    await acc.setRolePermission(A.admin, "SECRETARY", "case.register", false);
+    const limited = await actor("secretary@demo.local");
     await expect(cases.submitCase(limited, { type: "CASE", categoryId: ids.land, title: "Should fail", description: "This should be rejected by permissions." }, [], { fullName: "Some Visitor", phone: "0911222333" })).rejects.toBeInstanceOf(ForbiddenError);
-    await acc.setRolePermission(A.admin, "OFFICE_ASSISTANT", "case.register", true);
-    expect((await actor("assistant@demo.local")).permissions.has("case.register")).toBe(true);
+    await acc.setRolePermission(A.admin, "SECRETARY", "case.register", true);
+    expect((await actor("secretary@demo.local")).permissions.has("case.register")).toBe(true);
   });
 
   it("only a Super Administrator can change permissions", async () => {
@@ -130,13 +132,15 @@ describe("Case workflow end-to-end", () => {
     const refs = await prisma.case.findMany({ select: { referenceNo: true } });
     expect(new Set(refs.map((r) => r.referenceNo)).size).toBe(refs.length);
   });
-  it("registration officer verifies", async () => {
-    await cases.verifyCase(A.registrar, caseId);
+  it("the secretary verifies", async () => {
+    await cases.verifyCase(A.secretary, caseId);
     expect((await prisma.case.findUniqueOrThrow({ where: { id: caseId } })).status).toBe("REGISTERED");
   });
-  it("review officer assesses and forwards to the economic Deputy Mayor", async () => {
-    await cases.reviewCase(A.reviewer, caseId, { categoryId: ids.land, priority: "HIGH", confidentiality: "NORMAL", handling: "EXECUTIVE", assessment: "Needs executive instruction", recommendation: "Instruct land office" });
-    await cases.forwardToExecutive(A.reviewer, caseId, { executiveId: A.depEco.id, summary: "Delayed land service needing instruction", recommendedAction: "Instruct land office to resolve", reason: "Cross-office delay" });
+  it("the Head of Office assesses, assigns a case officer and forwards to the economic Deputy Mayor", async () => {
+    await cases.reviewCase(A.chief, caseId, { categoryId: ids.land, priority: "HIGH", confidentiality: "NORMAL", handling: "EXECUTIVE", assessment: "Needs executive instruction", recommendation: "Instruct land office" });
+    await cases.assignCaseOfficer(A.chief, caseId, A.secretary.id);
+    expect((await prisma.case.findUniqueOrThrow({ where: { id: caseId } })).assignedOfficerId).toBe(A.secretary.id);
+    await cases.forwardToExecutive(A.chief, caseId, { executiveId: A.depEco.id, summary: "Delayed land service needing instruction", recommendedAction: "Instruct land office to resolve", reason: "Cross-office delay" });
     const c = await prisma.case.findUniqueOrThrow({ where: { id: caseId } });
     expect(c.status).toBe("AWAITING_EXECUTIVE");
     expect(c.executiveId).toBe(A.depEco.id);
@@ -152,15 +156,13 @@ describe("Case workflow end-to-end", () => {
     expect(c.departmentId).toBe(ids.landDept);
     expect(await prisma.executiveDecision.count({ where: { caseId } })).toBe(1);
   });
-  it("department head allocates and the officer responds", async () => {
-    await cases.allocateToOfficer(A.landHead, caseId, A.landOfficer.id);
-    const officer = await actor("land.officer@demo.local");
-    expect((await cases.listCases(officer)).map((x) => x.id)).toContain(caseId);
-    await cases.departmentRespond(officer, caseId, { responseType: "COMPLETED", content: "Service completed and certificate issued to the citizen." });
+  it("the department head responds", async () => {
+    expect((await cases.listCases(A.landHead)).map((x) => x.id)).toContain(caseId);
+    await cases.departmentRespond(A.landHead, caseId, { responseType: "COMPLETED", content: "Service completed and certificate issued to the citizen." });
     expect((await prisma.case.findUniqueOrThrow({ where: { id: caseId } })).status).toBe("RESPONDED");
   });
-  it("review officer closes; citizen is notified and can rate once", async () => {
-    await cases.closeCase(A.reviewer, caseId, "Certificate issued; matter resolved.");
+  it("the Head of Office closes; citizen is notified and can rate once", async () => {
+    await cases.closeCase(A.chief, caseId, "Certificate issued; matter resolved.");
     expect((await prisma.case.findUniqueOrThrow({ where: { id: caseId } })).status).toBe("CLOSED");
     expect(await prisma.notification.count({ where: { userId: A.citizen.id, title: { contains: "closed" } } })).toBeGreaterThan(0);
     await cases.submitFeedback(A.citizen, caseId, 5, "Thank you");
@@ -173,8 +175,8 @@ describe("Case workflow end-to-end", () => {
     expect(actions.some((a) => a.action.startsWith("Executive decision"))).toBe(true);
   });
   it("closed cases can be reopened with justification", async () => {
-    await expect(cases.reopenCase(A.reviewer, caseId, "short")).rejects.toBeInstanceOf(AppError);
-    await cases.reopenCase(A.reviewer, caseId, "Citizen reports the certificate contains an error.");
+    await expect(cases.reopenCase(A.chief, caseId, "short")).rejects.toBeInstanceOf(AppError);
+    await cases.reopenCase(A.chief, caseId, "Citizen reports the certificate contains an error.");
     expect((await prisma.case.findUniqueOrThrow({ where: { id: caseId } })).status).toBe("UNDER_REVIEW");
   });
   it("the Mayor can delegate a forwarded case to a Deputy Mayor", async () => {
@@ -211,12 +213,12 @@ describe("Appointments", () => {
   });
   it("walk-in booking with empty optional form fields (as sent by the browser) works", async () => {
     const r = await appts.requestAppointment(
-      A.assistant,
+      A.secretary,
       { officialId: A.mayor.id, category: "PERSONAL_CASE", purpose: "Walk-in visitor with blank optional fields", date, time: "08:00", duration: "30" },
       { fullName: "Walk In Regression", phone: "0911777666", email: "", subCityId: "", woreda: "", kebele: "" },
     );
-    expect(r.status).toBe("REQUESTED"); // assistant cannot auto-approve
-    const c = await cases.submitCase(A.assistant, { type: "CASE", categoryId: ids.land, title: "Blank optional fields", description: "Walk-in case submitted with blank optional fields.", subCityId: "", channel: "WALK_IN", priority: "NORMAL", confidentiality: "NORMAL" }, [], { fullName: "Walk In Regression", phone: "0911777666", email: "", subCityId: "" });
+    expect(r.status).toBe("APPROVED"); // the secretary books directly
+    const c = await cases.submitCase(A.secretary, { type: "CASE", categoryId: ids.land, title: "Blank optional fields", description: "Walk-in case submitted with blank optional fields.", subCityId: "", channel: "WALK_IN", priority: "NORMAL", confidentiality: "NORMAL" }, [], { fullName: "Walk In Regression", phone: "0911777666", email: "", subCityId: "" });
     expect(c.subCityId).toBeNull();
   });
   it("availability marks booked slots", async () => {
@@ -224,10 +226,10 @@ describe("Appointments", () => {
     expect(slots.find((s) => s.time === "15:00")?.free).toBe(false);
     expect(slots.find((s) => s.time === "09:00")?.free).toBe(true);
   });
-  it("rejection requires an explanation; the secretary can approve; the assistant cannot", async () => {
+  it("rejection requires an explanation; the secretary can approve; a department head cannot", async () => {
     const r = await prisma.appointment.findFirstOrThrow({ where: { status: "REQUESTED", officialId: A.depSoc.id } });
     await expect(appts.decideAppointment(A.secretary, r.id, false)).rejects.toThrow(/reason/);
-    await expect(appts.decideAppointment(A.assistant, r.id, true)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(appts.decideAppointment(A.landHead, r.id, true)).rejects.toBeInstanceOf(AppError);
     await appts.decideAppointment(A.secretary, r.id, true);
     expect((await prisma.appointment.findUniqueOrThrow({ where: { id: r.id } })).status).toBe("APPROVED");
   });
@@ -245,8 +247,8 @@ describe("Reservations", () => {
     await expect(rsv.requestReservation(A.chief, { facilityId: ids.meeting, title: "Too many", attendees: 500, startAt: `${day}T13:00`, endAt: `${day}T14:00` })).rejects.toThrow(/holds at most/);
     await rsv.requestReservation(A.chief, { facilityId: ids.meeting, title: "Back to back", attendees: 5, startAt: `${day}T11:00`, endAt: `${day}T12:00` });
   });
-  it("department officers without permission cannot reserve", async () => {
-    await expect(rsv.requestReservation(A.landOfficer, { facilityId: ids.hall, title: "x", attendees: 1, startAt: `${day}T15:00`, endAt: `${day}T16:00` })).rejects.toBeInstanceOf(ForbiddenError);
+  it("accounts without the reservation permission cannot reserve", async () => {
+    await expect(rsv.requestReservation(A.admin, { facilityId: ids.hall, title: "x", attendees: 1, startAt: `${day}T15:00`, endAt: `${day}T16:00` })).rejects.toBeInstanceOf(ForbiddenError);
   });
 });
 
@@ -263,15 +265,101 @@ describe("Security utilities", () => {
     expect(verifyTotp(s, totp(s, Date.now() - 5 * 60_000))).toBe(false);
   });
   it("locks an account after 5 failed sign-ins", async () => {
-    for (let i = 0; i < 5; i++) await acc.authenticate("registrar@demo.local", "wrong-password", undefined, null);
-    const r = await acc.authenticate("registrar@demo.local", "Demo@2026pass", undefined, null);
+    for (let i = 0; i < 5; i++) await acc.authenticate("infra.head@demo.local", "wrong-password", undefined, null);
+    const r = await acc.authenticate("infra.head@demo.local", "Demo@2026pass", undefined, null);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/locked/);
-    await prisma.user.update({ where: { email: "registrar@demo.local" }, data: { lockedUntil: null, failedLoginCount: 0 } });
-    expect((await acc.authenticate("registrar@demo.local", "Demo@2026pass", undefined, null)).ok).toBe(true);
+    await prisma.user.update({ where: { email: "infra.head@demo.local" }, data: { lockedUntil: null, failedLoginCount: 0 } });
+    expect((await acc.authenticate("infra.head@demo.local", "Demo@2026pass", undefined, null)).ok).toBe(true);
   });
   it("reports are scoped: department heads only get their department", async () => {
     const r = await buildReport(A.landHead, parseRange({}));
     expect(r.byDepartment.every((d) => d.name.startsWith("Land"))).toBe(true);
+  });
+});
+
+describe("Review changes (Nov 2026)", () => {
+  it("woredas and kebeles come from the admin's list", async () => {
+    const sc = await prisma.subCity.findFirstOrThrow({ where: { code: "SC-A" } });
+    await dir.addWoredas(A.admin, sc.id, "T1, T2, T1");
+    const t1 = await prisma.woreda.findFirstOrThrow({ where: { subCityId: sc.id, name: "T1" } });
+    expect(await prisma.woreda.count({ where: { subCityId: sc.id, name: { in: ["T1", "T2"] } } })).toBe(2);
+    await dir.addKebeles(A.admin, t1.id, "K1\nK2");
+    await expect(dir.addWoredas(A.mayor, sc.id, "X")).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(dir.assertLocation({ subCityId: sc.id, woreda: "T1", kebele: "K1" })).resolves.toBeUndefined();
+    await expect(dir.assertLocation({ subCityId: sc.id, woreda: "T1", kebele: "K9" })).rejects.toBeInstanceOf(AppError);
+    await expect(dir.assertLocation({ subCityId: sc.id, woreda: "NOPE" })).rejects.toBeInstanceOf(AppError);
+    await expect(
+      cases.submitCase(A.secretary, { type: "CASE", categoryId: ids.land, title: "Bad location", description: "Walk-in case with a woreda that is not registered." }, [], { fullName: "Loc Test", phone: "0911555444", subCityId: sc.id, woreda: "NOPE" }),
+    ).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("tracks by reference number or by phone, listing several cases to choose from", async () => {
+    const c1 = await cases.submitCase(A.secretary, { type: "CASE", categoryId: ids.land, title: "Track one", description: "First walk-in case for the tracking test." }, [], { fullName: "Track Person", phone: "0911444333" });
+    const c2 = await cases.submitCase(A.secretary, { type: "COMPLAINT", categoryId: ids.land, title: "Track two", description: "Second walk-in case for the tracking test." }, [], { fullName: "Track Person", phone: "0911444333" });
+    const byRef = await cases.trackCase({ referenceNo: c1.referenceNo });
+    expect(byRef && "result" in byRef && byRef.result.referenceNo).toBe(c1.referenceNo);
+    const byPhone = await cases.trackCase({ phone: "+251911444333" });
+    expect(byPhone && "matches" in byPhone && byPhone.matches.map((m) => m.referenceNo).sort()).toEqual([c1.referenceNo, c2.referenceNo].sort());
+    const chosen = await cases.trackCase({ referenceNo: c2.referenceNo, phone: "0911444333" });
+    expect(chosen && "result" in chosen && chosen.result.title).toBe("Track two");
+    expect(await cases.trackCase({ phone: "0900000001" })).toBeNull();
+  });
+
+  it("office codes are generated and the sub-city mayor is shared", async () => {
+    const sc = await prisma.subCity.findFirstOrThrow({ where: { code: "SC-B" } });
+    await dir.saveDepartment(A.admin, null, { name: "Test Office", headName: "Rep Name", subCityId: sc.id, subCityMayor: "Mayor B Test" });
+    const d = await prisma.department.findFirstOrThrow({ where: { name: "Test Office" }, include: { subCity: true } });
+    expect(d.code).toMatch(/^OFF-\d{3}$/);
+    expect(d.type).toBe("OFFICE");
+    expect(d.subCity?.mayorName).toBe("Mayor B Test");
+  });
+
+  it("role permissions are saved as a set", async () => {
+    const before = (await actor("land.head@demo.local")).permissions;
+    await acc.setRolePermissions(A.admin, "DEPARTMENT_HEAD", [...before, "audit.view"]);
+    expect((await actor("land.head@demo.local")).permissions.has("audit.view")).toBe(true);
+    await acc.setRolePermissions(A.admin, "DEPARTMENT_HEAD", [...before]);
+    expect((await actor("land.head@demo.local")).permissions.has("audit.view")).toBe(false);
+    await expect(acc.setRolePermissions(A.admin, "SUPER_ADMIN", ["dashboard.admin"])).rejects.toBeInstanceOf(AppError);
+  });
+
+  it("admin creates a case-owner account that is linked to earlier walk-in cases", async () => {
+    await cases.submitCase(A.secretary, { type: "CASE", categoryId: ids.land, title: "Walk-in before account", description: "Walk-in case registered before the account existed." }, [], { fullName: "Linked Owner", phone: "0911888777" });
+    const r = await acc.createCitizenAccount(A.admin, { fullName: "Linked Owner", email: "linked.owner@example.com", phone: "0911888777" });
+    expect(r.linkedCases).toBe(1);
+    const owner = await actor("linked.owner@example.com");
+    expect(owner.permissions.has("portal.citizen")).toBe(true);
+    expect((await cases.listCases(owner)).length).toBe(1);
+    await expect(acc.createCitizenAccount(A.mayor, { fullName: "No Access", email: "x@example.com", phone: "0911000111" })).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("the case officer gives an appointment, and the citizen can request one that the officer approves", async () => {
+    const c = await cases.submitCase(A.citizen, { type: "CASE", categoryId: ids.land, title: "Case needing a meeting", description: "Online case used to test case appointments end to end." });
+    const day = nextWeekday(5);
+    await expect(appts.requestCaseAppointment(A.citizen, c.id, { date: day, time: "09:00", duration: 30, purpose: "I would like to explain my case." })).rejects.toThrow(/case officer/);
+    await cases.assignCaseOfficer(A.chief, c.id, A.secretary.id);
+    await expect(cases.assignCaseOfficer(A.secretary, c.id, A.chief.id)).rejects.toBeInstanceOf(ForbiddenError);
+    const given = await appts.scheduleCaseAppointment(A.secretary, c.id, { date: day, time: "09:00", duration: 30, purpose: "Bring your documents for verification." });
+    expect(given.status).toBe("APPROVED");
+    expect(given.caseId).toBe(c.id);
+    await expect(appts.scheduleCaseAppointment(A.landHead, c.id, { date: day, time: "10:00", duration: 30, purpose: "Not my case at all." })).rejects.toBeInstanceOf(AppError);
+    const asked = await appts.requestCaseAppointment(A.citizen, c.id, { date: day, time: "11:00", duration: 30, purpose: "Follow-up discussion on my case." });
+    expect(asked.status).toBe("REQUESTED");
+    expect(asked.officialId).toBe(A.secretary.id);
+    await expect(appts.requestCaseAppointment(A.citizen2, c.id, { date: day, time: "14:00", duration: 30, purpose: "Someone else's case request." })).rejects.toBeInstanceOf(AppError);
+    await appts.decideAppointment(A.secretary, asked.id, true);
+    const mine = await appts.caseAppointments(A.citizen, c.id);
+    expect(mine.map((a) => a.status).sort()).toEqual(["APPROVED", "APPROVED"]);
+  });
+
+  it("the Super Administrator manages the citizen Official drop-down", async () => {
+    const before = await appts.officials();
+    expect(before[0].label).toBe("Mayor");
+    await appts.setAppointmentOfficial(A.admin, A.landHead.id, { acceptsAppointments: true, appointmentLabel: "Land Office Head", appointmentOrder: 9 });
+    expect((await appts.officials()).at(-1)?.label).toBe("Land Office Head");
+    await appts.setAppointmentOfficial(A.admin, A.landHead.id, { acceptsAppointments: false });
+    expect((await appts.officials()).some((o) => o.id === A.landHead.id)).toBe(false);
+    await expect(appts.setAppointmentOfficial(A.mayor, A.landHead.id, { acceptsAppointments: true })).rejects.toBeInstanceOf(ForbiddenError);
   });
 });

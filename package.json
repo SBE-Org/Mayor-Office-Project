@@ -12,7 +12,6 @@
     "db:seed": "tsx --env-file=.env prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && tsx --env-file=.env prisma/seed.ts",
     "db:provider": "node scripts/set-db-provider.mjs",
-    "vercel-build": "node scripts/set-db-provider.mjs postgresql --direct && prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next build",
     "backup": "node scripts/backup.mjs",
     "test": "node scripts/test.mjs"
   },

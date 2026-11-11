@@ -5,13 +5,14 @@
  * Demo records are clearly labelled "(Demo)" and must not be used as real institutional records.
  */
 import { prisma } from "../src/server/db";
-import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS, ROLES, type RoleCode } from "../src/shared/permissions";
+import { DEFAULT_ROLE_PERMISSIONS, PERMISSION_UPGRADES, PERMISSIONS, RETIRED_ROLES, ROLES, type RoleCode } from "../src/shared/permissions";
 import { hashPassword } from "../src/server/auth/password";
 import { loadActor } from "../src/server/auth/actor";
 import * as cases from "../src/server/services/cases";
 import * as appts from "../src/server/services/appointments";
 import * as rsv from "../src/server/services/reservations";
 import * as corr from "../src/server/services/correspondence";
+import { BASE_CATEGORIES, ensureBaseCategories } from "../src/server/services/directory";
 
 export const DEMO_PASSWORD = "Demo@2026pass";
 const resetPerms = process.argv.includes("--reset-permissions");
@@ -30,7 +31,35 @@ async function seedAccessControl() {
       await prisma.rolePermission.createMany({ data: DEFAULT_ROLE_PERMISSIONS[code as RoleCode].map((pc) => ({ roleId: role.id, permissionId: byCode.get(pc)! })) });
     }
   }
+  // Retired roles: move their users to the replacement role, then remove the role.
+  for (const [oldCode, newCode] of Object.entries(RETIRED_ROLES)) {
+    const old = await prisma.role.findUnique({ where: { code: oldCode } });
+    if (!old) continue;
+    const target = await prisma.role.findUniqueOrThrow({ where: { code: newCode } });
+    const moved = await prisma.user.updateMany({ where: { roleId: old.id }, data: { roleId: target.id } });
+    await prisma.role.delete({ where: { id: old.id } });
+    console.log(`• role ${oldCode} removed; ${moved.count} user(s) moved to ${newCode}`);
+  }
+  // One-time additions to the default permissions for databases created earlier.
+  for (const up of PERMISSION_UPGRADES) {
+    const key = `perm-upgrade:${up.key}`;
+    if (await prisma.counter.findUnique({ where: { key } })) continue;
+    for (const [roleCode, codes] of Object.entries(up.grants)) {
+      const role = await prisma.role.findUnique({ where: { code: roleCode } });
+      if (!role) continue;
+      for (const pc of codes ?? []) {
+        const permissionId = byCode.get(pc)!;
+        await prisma.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId } }, create: { roleId: role.id, permissionId }, update: {} });
+      }
+    }
+    await prisma.counter.create({ data: { key, value: 1 } });
+  }
   console.log(`✓ ${perms.length} permissions, ${Object.keys(ROLES).length} roles`);
+}
+
+async function seedBaseCategories() {
+  const n = await ensureBaseCategories();
+  if (n) console.log(`✓ ${n} case categories created`);
 }
 
 function nextWeekday(offsetDays: number, hour: number, minute = 0) {
@@ -52,8 +81,14 @@ async function seedDemo() {
   const pw = await hashPassword(DEMO_PASSWORD);
 
   const subCities = await Promise.all(
-    ["A", "B", "C", "D"].map((x, i) => prisma.subCity.create({ data: { code: `SC-${x}`, name: `Demo Sub-City ${x}` } }).then((s) => ({ ...s, i }))),
+    ["A", "B", "C", "D"].map((x, i) => prisma.subCity.create({ data: { code: `SC-${x}`, name: `Demo Sub-City ${x}`, mayorName: `Mayor of Sub-City ${x} (Demo)` } }).then((s) => ({ ...s, i }))),
   );
+  // Woredas 01-03 with kebeles 01-03 in each demo sub-city (maintained later under Sub-cities, woredas & kebeles)
+  for (const sc of subCities) {
+    for (const w of ["01", "02", "03"]) {
+      await prisma.woreda.create({ data: { subCityId: sc.id, name: w, kebeles: { create: ["01", "02", "03"].map((name) => ({ name })) } } });
+    }
+  }
   const dept = async (code: string, name: string, type = "DEPARTMENT", subCityId?: string) =>
     prisma.department.create({ data: { code, name: `${name} (Demo)`, type, subCityId, headName: `Head of ${name}` } });
   const land = await dept("LAND", "Land Administration Office");
@@ -63,37 +98,27 @@ async function seedDemo() {
   const infra = await dept("INFRA", "Infrastructure Office");
   const sca = await dept("SCA-A", "Sub-City A Administration", "SUBCITY_ADMIN", subCities[0].id);
 
-  const categories: [string, string, string | null, number][] = [
-    ["LAND", "Land and property", land.id, 20],
-    ["HOUSING", "Housing", housing.id, 20],
-    ["EMPLOYMENT", "Employment", labour.id, 15],
-    ["SOCIAL", "Social support", social.id, 10],
-    ["SERVICE", "Administrative / public-service complaint", null, 10],
-    ["COMMUNITY", "Community development", sca.id, 30],
-    ["INFRA", "Infrastructure", infra.id, 30],
-    ["INTERVENTION", "Request for intervention", null, 10],
-    ["OTHER", "Other", null, 15],
-  ];
+  // Default offices for the baseline categories
+  const defaultDept: Record<string, string> = { LAND: land.id, HOUSING: housing.id, EMPLOYMENT: labour.id, SOCIAL: social.id, COMMUNITY: sca.id, INFRA: infra.id };
   const cat = new Map<string, string>();
-  for (const [code, name, defaultDepartmentId, days] of categories) {
-    const c = await prisma.caseCategory.create({ data: { code, name, defaultDepartmentId, defaultDeadlineDays: days } });
+  for (const [code, name, , , days] of BASE_CATEGORIES) {
+    const c = await prisma.caseCategory.upsert({
+      where: { code },
+      create: { code, name, defaultDepartmentId: defaultDept[code] ?? null, defaultDeadlineDays: days },
+      update: { defaultDepartmentId: defaultDept[code] ?? null },
+    });
     cat.set(code, c.id);
   }
 
   const user = (email: string, fullName: string, role: RoleCode, extra: Record<string, unknown> = {}) =>
     prisma.user.create({ data: { email, fullName, passwordHash: pw, roleId: roles.get(role)!, ...extra } });
   await user("admin@demo.local", "System Administrator (Demo)", "SUPER_ADMIN");
-  const mayor = await user("mayor@demo.local", "Mayor (Demo Account)", "MAYOR", { title: "Mayor of Shaggar City", acceptsAppointments: true });
-  const dep1 = await user("deputy.economic@demo.local", "Deputy Mayor - Economic (Demo)", "DEPUTY_MAYOR", { title: "Deputy Mayor, Economic Affairs (Demo)", acceptsAppointments: true });
-  const dep2 = await user("deputy.social@demo.local", "Deputy Mayor - Social (Demo)", "DEPUTY_MAYOR", { title: "Deputy Mayor, Social Affairs (Demo)", acceptsAppointments: true });
-  const chief = await user("chief@demo.local", "Head of Mayor's Office (Demo)", "CHIEF_OF_STAFF", { title: "Head of the Office of the Mayor", acceptsAppointments: true });
+  const mayor = await user("mayor@demo.local", "Mayor (Demo Account)", "MAYOR", { title: "Mayor of Shaggar City", acceptsAppointments: true, appointmentLabel: "Mayor", appointmentOrder: 1 });
+  const dep1 = await user("deputy.economic@demo.local", "Deputy Mayor - Economic (Demo)", "DEPUTY_MAYOR", { title: "Deputy Mayor, Economic Affairs (Demo)", acceptsAppointments: true, appointmentLabel: "Deputy Mayor – Economic Affairs", appointmentOrder: 2 });
+  const dep2 = await user("deputy.social@demo.local", "Deputy Mayor - Social (Demo)", "DEPUTY_MAYOR", { title: "Deputy Mayor, Social Affairs (Demo)", acceptsAppointments: true, appointmentLabel: "Deputy Mayor – Social Affairs", appointmentOrder: 3 });
+  const chief = await user("chief@demo.local", "Head of Mayor's Office (Demo)", "CHIEF_OF_STAFF", { title: "Head of the Office of the Mayor", acceptsAppointments: true, appointmentLabel: "Head of Mayor's Office", appointmentOrder: 4 });
   const secretary = await user("secretary@demo.local", "Mayor's Secretary (Demo)", "SECRETARY", { title: "Secretary to the Mayor" });
-  const assistant = await user("assistant@demo.local", "Office Assistant (Demo)", "OFFICE_ASSISTANT", { title: "Front Desk / Office Assistant" });
-  await user("registrar@demo.local", "Case Registration Officer (Demo)", "CASE_REGISTRATION_OFFICER");
-  const reviewer = await user("reviewer@demo.local", "Case Review Officer (Demo)", "CASE_REVIEW_OFFICER");
-  const docs = await user("documents@demo.local", "Document Officer (Demo)", "DOCUMENT_OFFICER");
   const landHead = await user("land.head@demo.local", "Land Office Head (Demo)", "DEPARTMENT_HEAD", { departmentId: land.id });
-  await user("land.officer@demo.local", "Land Office Officer (Demo)", "DEPARTMENT_OFFICER", { departmentId: land.id });
   await user("infra.head@demo.local", "Infrastructure Head (Demo)", "DEPARTMENT_HEAD", { departmentId: infra.id });
   await user("social.head@demo.local", "Social Affairs Head (Demo)", "DEPARTMENT_HEAD", { departmentId: social.id });
 
@@ -110,13 +135,16 @@ async function seedDemo() {
   await prisma.facility.create({ data: { name: "Community Event Space (Demo)", type: "EVENT_SPACE", capacity: 300, location: "Annex" } });
 
   const A = async (id: string) => (await loadActor(id))!;
-  const [aC1, aC2, aRev, aMayor, aDep1, aLand, aAsst, aSec, aChief, aDocs] = await Promise.all(
-    [c1u, c2u, reviewer, mayor, dep1, landHead, assistant, secretary, chief, docs].map((u) => A(u.id)),
-  );
+  const [aC1, aC2, aMayor, aLand, aSec, aChief] = await Promise.all([c1u, c2u, mayor, landHead, secretary, chief].map((u) => A(u.id)));
+  const aRev = aChief; // Head of Office reviews and forwards
+  const aAsst = aSec; // Secretary registers walk-ins
+  const aDocs = aSec; // Secretary registers correspondence
 
   // Case 1: full workflow -> awaiting Mayor
   const k1 = await cases.submitCase(aC1, { type: "CASE", categoryId: cat.get("LAND"), title: "Unresolved land title transfer after inheritance", description: "My late father's plot has not been transferred to the heirs for over two years despite submitting all documents to the sub-city office.", subCityId: subCities[0].id });
   await cases.reviewCase(aRev, k1.id, { categoryId: cat.get("LAND"), priority: "HIGH", confidentiality: "NORMAL", handling: "EXECUTIVE", assessment: "Documents appear complete; delay exceeds the service standard and involves multiple offices.", recommendation: "Instruct the Land Administration Office to complete the transfer within 15 days." });
+  await cases.assignCaseOfficer(aChief, k1.id, secretary.id);
+  await appts.scheduleCaseAppointment(aSec, k1.id, { date: ymd(nextWeekday(2, 10)), time: "10:00", duration: 30, purpose: "Bring the original inheritance documents for verification." });
   await cases.forwardToExecutive(aRev, k1.id, { executiveId: mayor.id, summary: "Inheritance title transfer pending for over two years; complete documentation on file.", recommendedAction: "Instruct Land Administration to finalise within 15 days and report back.", reason: "Cross-office delay requiring executive instruction." });
 
   // Case 2: decided by Mayor -> with land department -> responded
@@ -159,6 +187,7 @@ async function seedDemo() {
 
 async function main() {
   await seedAccessControl();
+  await seedBaseCategories();
   if (process.env.DEMO_MODE === "true") await seedDemo();
 }
 

@@ -5,7 +5,7 @@ import clsx from "clsx";
 type Official = { id: string; name: string; title: string | null };
 
 export function SlotPicker({ officials, labels, minDate }: { officials: Official[]; labels: Record<string, string>; minDate: string }) {
-  const [officialId, setOfficialId] = useState(officials[0]?.id ?? "");
+  const [officialId, setOfficialId] = useState(officials.length === 1 ? officials[0].id : "");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [slots, setSlots] = useState<{ time: string; free: boolean }[] | null>(null);
@@ -30,6 +30,7 @@ export function SlotPicker({ officials, labels, minDate }: { officials: Official
       <label className="block">
         <span className="label">{labels.official}</span>
         <select name="officialId" required value={officialId} onChange={(e) => setOfficialId(e.target.value)} className="input">
+          {officials.length !== 1 && <option value="">{officials.length ? labels.chooseOfficial ?? "Choose…" : labels.noOfficials ?? "No officials are available for appointments yet"}</option>}
           {officials.map((o) => (
             <option key={o.id} value={o.id}>{o.name}{o.title ? ` — ${o.title}` : ""}</option>
           ))}

@@ -9,7 +9,7 @@ The system is built so that each item below is a setting, not hard-coded policy.
 | 3 | Which rooms can be reserved, and who controls them? | Three demo facilities; Secretary and Head of Office approve | Facilities, Roles & permissions |
 | 4 | Case categories and confidentiality levels | 9 categories from the master prompt; levels Normal / Confidential / Strict | Case categories; `CONFIDENTIALITY` constant |
 | 5 | Which cases staff may handle, which go to departments, which to the Mayor | Decided case by case by the reviewer ("Handling" field) | Review form |
-| 6 | Who may forward cases and issue executive instructions? | Forward: Head of Office, Case Review Officer. Decide: Mayor and Deputy Mayors (Deputies only on cases forwarded or delegated to them) | Roles & permissions (`case.forward`, `case.decide`) |
+| 6 | Who may forward cases and issue executive instructions? | Forward: Head of Office. Decide: Mayor and Deputy Mayors (Deputies only on cases forwarded or delegated to them) | Roles & permissions (`case.forward`, `case.decide`) |
 | 7 | Who may see confidential cases? | Mayor and Head of Office; others only if directly involved | Roles & permissions (`case.view.confidential`) |
 | 8 | Departments and sub-cities | Demo placeholders only (marked "(Demo)") | Departments |
 | 9 | Response deadlines and escalation | Per-category default days (10–30); overdue cases escalated manually | Case categories |

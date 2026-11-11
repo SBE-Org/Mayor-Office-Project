@@ -1,14 +1,12 @@
-import Link from "next/link";
 import { requireActor } from "@/server/auth/session";
 import { prisma } from "@/server/db";
 import { Badge, Card, Empty, PageHeader, Stat } from "@/components/ui";
-import { fmtDateTime } from "@/shared/format";
 
 export const metadata = { title: "System administration" };
 
 export default async function AdminDashboard() {
   await requireActor("dashboard.admin");
-  const [staff, citizens, inactive, locked, sessions, outbound, recentFails, audit] = await Promise.all([
+  const [staff, citizens, inactive, locked, sessions, outbound, recentFails] = await Promise.all([
     prisma.user.count({ where: { role: { code: { not: "CITIZEN" } }, isActive: true } }),
     prisma.user.count({ where: { role: { code: "CITIZEN" } } }),
     prisma.user.count({ where: { isActive: false } }),
@@ -16,7 +14,6 @@ export default async function AdminDashboard() {
     prisma.session.count({ where: { expiresAt: { gt: new Date() } } }),
     prisma.outboundMessage.findMany({ orderBy: { createdAt: "desc" }, take: 10 }),
     prisma.auditLog.count({ where: { action: { startsWith: "LOGIN_FAILED" }, createdAt: { gt: new Date(Date.now() - 86400_000) } } }),
-    prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 12, include: { user: true } }),
   ]);
   const smsOn = !!process.env.SMS_PROVIDER_URL;
   const emailOn = !!process.env.EMAIL_WEBHOOK_URL;
@@ -25,13 +22,13 @@ export default async function AdminDashboard() {
       <PageHeader title="System administration" subtitle="Accounts, security and integrations. Case content is not visible to this role by default." />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
         <Stat label="Active staff" value={staff} href="/staff/admin/users" />
-        <Stat label="Citizen accounts" value={citizens} />
+        <Stat label="Citizen accounts" value={citizens} href="/staff/admin/users?role=CITIZEN" />
         <Stat label="Deactivated" value={inactive} />
         <Stat label="Locked now" value={locked} tone={locked ? "warn" : "default"} />
         <Stat label="Active sessions" value={sessions} />
         <Stat label="Failed sign-ins (24h)" value={recentFails} tone={recentFails > 10 ? "danger" : "default"} href="/staff/admin/audit?action=LOGIN_FAILED" />
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6">
         <Card title="Notification integrations">
           <ul className="space-y-2 text-sm">
             <li className="flex justify-between"><span>In-app notifications</span><Badge value="APPROVED" text="Active" /></li>
@@ -50,16 +47,6 @@ export default async function AdminDashboard() {
               ))}
             </ul>
           )}
-        </Card>
-        <Card title="Recent activity" actions={<Link href="/staff/admin/audit" className="link text-xs">Full audit log</Link>}>
-          <ul className="divide-y divide-slate-100 text-xs">
-            {audit.map((l) => (
-              <li key={l.id} className="flex justify-between gap-2 py-1.5">
-                <span><b>{l.action}</b> · {l.entity} · {l.user?.fullName ?? "anonymous"}</span>
-                <span className="shrink-0 text-slate-500">{fmtDateTime(l.createdAt)}</span>
-              </li>
-            ))}
-          </ul>
         </Card>
       </div>
     </div>

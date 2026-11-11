@@ -1,4 +1,5 @@
 import { requireActor } from "@/server/auth/session";
+import { prisma } from "@/server/db";
 import { activeCategories, activeSubCities } from "@/server/services/directory";
 import { getDict } from "@/server/i18n";
 import { catName } from "@/shared/localize";
@@ -15,9 +16,13 @@ const TYPES: Record<string, Record<string, string>> = {
 };
 
 export default async function NewCitizenCase() {
-  await requireActor("portal.citizen");
+  const a = await requireActor("portal.citizen");
   const { t, lang } = await getDict();
-  const [cats, subs] = await Promise.all([activeCategories(), activeSubCities()]);
+  const [cats, subs, me] = await Promise.all([
+    activeCategories(),
+    activeSubCities(),
+    a.citizenId ? prisma.citizen.findUnique({ where: { id: a.citizenId }, select: { subCityId: true } }) : null,
+  ]);
   return (
     <div className="mx-auto max-w-3xl">
       <h1 className="mb-6 text-2xl font-semibold">{t.newCase}</h1>
@@ -26,11 +31,17 @@ export default async function NewCitizenCase() {
           <Field label={t.type}>
             <select name="type" required className="input">{Object.entries(TYPES).map(([k, v]) => <option key={k} value={k}>{v[lang]}</option>)}</select>
           </Field>
-          <Field label={t.category}>
-            <select name="categoryId" required className="input"><option value="">—</option>{cats.map((c) => <option key={c.id} value={c.id}>{catName(c, lang)}</option>)}</select>
+          <Field label={t.category} hint={cats.length ? undefined : t.noCategories}>
+            <select name="categoryId" required className="input">
+              <option value="">{cats.length ? "—" : "…"}</option>
+              {cats.map((c) => <option key={c.id} value={c.id}>{catName(c, lang)}</option>)}
+            </select>
           </Field>
-          <Field label={t.subCity}>
-            <select name="subCityId" className="input"><option value="">—</option>{subs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+          <Field label={t.subCity} hint={subs.length ? undefined : t.noSubCities}>
+            <select name="subCityId" defaultValue={me?.subCityId ?? ""} className="input">
+              <option value="">—</option>
+              {subs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
           </Field>
           <div />
           <Field label={t.title} className="sm:col-span-2"><input name="title" required minLength={5} maxLength={200} className="input" /></Field>

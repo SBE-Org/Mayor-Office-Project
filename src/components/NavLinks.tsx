@@ -3,12 +3,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import {
-  BarChart3, Building2, CalendarDays, Crown, DoorOpen, FolderOpen, History, LayoutDashboard, Mail, Network, Plus, Settings, ShieldCheck, Tags, Users,
+  BarChart3, Building2, CalendarDays, Crown, DoorOpen, FolderOpen, History, LayoutDashboard, Mail, MapPin, Network, Plus, Settings, ShieldCheck, Tags, Users,
 } from "lucide-react";
 
 const ICONS = {
   crown: Crown, layout: LayoutDashboard, building: Building2, settings: Settings, folder: FolderOpen, plus: Plus, calendar: CalendarDays,
-  door: DoorOpen, mail: Mail, network: Network, chart: BarChart3, users: Users, shield: ShieldCheck, tags: Tags, history: History,
+  door: DoorOpen, mail: Mail, map: MapPin, network: Network, chart: BarChart3, users: Users, shield: ShieldCheck, tags: Tags, history: History,
 };
 export type NavItem = { href: string; label: string; icon: keyof typeof ICONS };
 

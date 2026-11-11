@@ -1,84 +1,95 @@
-import { Fragment } from "react";
-import { Check, Minus } from "lucide-react";
+import Link from "next/link";
+import clsx from "clsx";
 import { requireActor } from "@/server/auth/session";
 import { prisma } from "@/server/db";
 import { DEFAULT_ROLE_PERMISSIONS, type RoleCode } from "@/shared/permissions";
-import { togglePermissionAction } from "@/server/actions/admin";
-import { PageHeader } from "@/components/ui";
+import { resetRolePermissionsAction, saveRolePermissionsAction } from "@/server/actions/admin";
+import { ActionForm, SubmitButton } from "@/components/ActionForm";
+import { Card, PageHeader } from "@/components/ui";
 
 export const metadata = { title: "Roles & permissions" };
 
-const ORDER: RoleCode[] = [
-  "MAYOR", "DEPUTY_MAYOR", "CHIEF_OF_STAFF", "SECRETARY", "OFFICE_ASSISTANT", "CASE_REGISTRATION_OFFICER", "CASE_REVIEW_OFFICER",
-  "DOCUMENT_OFFICER", "DEPARTMENT_HEAD", "DEPARTMENT_OFFICER", "SUPER_ADMIN", "CITIZEN",
-];
-const SHORT: Record<string, string> = {
-  MAYOR: "Mayor", DEPUTY_MAYOR: "Deputy Mayor", CHIEF_OF_STAFF: "Head of Office", SECRETARY: "Secretary", OFFICE_ASSISTANT: "Office Assistant",
-  CASE_REGISTRATION_OFFICER: "Registration Off.", CASE_REVIEW_OFFICER: "Review Off.", DOCUMENT_OFFICER: "Document Off.", DEPARTMENT_HEAD: "Dept. Head",
-  DEPARTMENT_OFFICER: "Dept. Officer", SUPER_ADMIN: "Super Admin", CITIZEN: "Citizen",
-};
+const ORDER: RoleCode[] = ["SUPER_ADMIN", "MAYOR", "DEPUTY_MAYOR", "CHIEF_OF_STAFF", "SECRETARY", "DEPARTMENT_HEAD", "CITIZEN"];
 
-export default async function RolesPage() {
+export default async function RolesPage({ searchParams }: { searchParams: Promise<{ role?: string }> }) {
   await requireActor("role.manage");
+  const sp = await searchParams;
   const [roles, perms] = await Promise.all([
     prisma.role.findMany({ include: { permissions: { include: { permission: true } }, _count: { select: { users: true } } } }),
     prisma.permission.findMany({ orderBy: [{ module: "asc" }, { code: "asc" }] }),
   ]);
-  const sorted = ORDER.map((c) => roles.find((r) => r.code === c)).filter(Boolean) as typeof roles;
-  const granted = new Set(roles.flatMap((r) => r.permissions.map((p) => `${r.code}|${p.permission.code}`)));
+  const sorted = [
+    ...(ORDER.map((c) => roles.find((r) => r.code === c)).filter(Boolean) as typeof roles),
+  ];
+  const role = sorted.find((r) => r.code === sp.role) ?? sorted[0];
+  if (!role) return <PageHeader title="Roles & permissions" subtitle="No roles found. Run the database seed." />;
+
+  const granted = new Set(role.permissions.map((p) => p.permission.code));
+  const defaults = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role.code as RoleCode] ?? []);
   const modules = [...new Set(perms.map((p) => p.module))];
+
   return (
-    <div>
-      <PageHeader title="Roles & permissions" subtitle="Click a cell to grant or revoke. Changes apply at the user's next page load and are recorded in the audit log. Cells marked • differ from the default." />
-      <div className="card overflow-x-auto">
-        <table className="min-w-full text-xs">
-          <thead className="sticky top-0 bg-white">
-            <tr>
-              <th className="sticky left-0 z-10 min-w-64 bg-white px-3 py-2 text-left">Permission</th>
-              {sorted.map((r) => (
-                <th key={r.id} className="px-1 py-2 text-center align-bottom font-semibold text-navy-800" title={r.description ?? ""}>
-                  <span className="block w-20 leading-tight">{SHORT[r.code] ?? r.name}</span>
-                  <span className="font-normal text-slate-400">{r._count.users} users</span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
+    <div className="space-y-6">
+      <PageHeader
+        title="Roles & permissions"
+        subtitle="Choose a role, tick the permissions it should have and press Save. Changes take effect at the user's next page load and are recorded in the audit log."
+      />
+      <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
+        <Card title="Roles">
+          <ul className="-mx-2 space-y-0.5">
+            {sorted.map((r) => (
+              <li key={r.id}>
+                <Link
+                  href={`/staff/admin/roles?role=${r.code}`}
+                  className={clsx("flex items-center justify-between rounded-lg px-2 py-1.5 text-sm", r.id === role.id ? "bg-brand-600 text-white" : "text-slate-700 hover:bg-slate-50")}
+                >
+                  <span>{r.name}</span>
+                  <span className={clsx("text-xs", r.id === role.id ? "text-white/80" : "text-slate-400")}>{r._count.users}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <Card
+          title={`${role.name} — ${granted.size} of ${perms.length} permissions`}
+          actions={
+            <ActionForm key={`reset-${role.code}`} action={resetRolePermissionsAction.bind(null, role.code)} confirm={`Restore the default permissions for ${role.name}?`} className="flex items-center gap-2">
+              <SubmitButton className="btn-outline btn-sm">Restore defaults</SubmitButton>
+            </ActionForm>
+          }
+        >
+          {role.description && <p className="mb-4 text-sm text-slate-500">{role.description}</p>}
+          <ActionForm key={role.code} action={saveRolePermissionsAction.bind(null, role.code)} className="space-y-5">
             {modules.map((m) => (
-              <Fragment key={m}>
-                <tr><td colSpan={sorted.length + 1} className="bg-navy-50 px-3 py-1.5 font-semibold uppercase tracking-wide text-navy-700">{m}</td></tr>
-                {perms.filter((p) => p.module === m).map((p) => (
-                  <tr key={p.id} className="border-t border-slate-100 hover:bg-slate-50">
-                    <td className="sticky left-0 bg-white px-3 py-1.5"><p className="text-slate-800">{p.name}</p><p className="font-mono text-[10px] text-slate-400">{p.code}</p></td>
-                    {sorted.map((r) => {
-                      const on = granted.has(`${r.code}|${p.code}`);
-                      const def = (DEFAULT_ROLE_PERMISSIONS[r.code as RoleCode] as string[]).includes(p.code);
+              <fieldset key={m}>
+                <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-navy-700">{m}</legend>
+                <div className="grid gap-1 sm:grid-cols-2">
+                  {perms
+                    .filter((p) => p.module === m)
+                    .map((p) => {
+                      const on = granted.has(p.code);
+                      const changed = on !== defaults.has(p.code);
                       return (
-                        <td key={r.id} className="px-1 py-1 text-center">
-                          <form action={togglePermissionAction}>
-                            <input type="hidden" name="role" value={r.code} />
-                            <input type="hidden" name="permission" value={p.code} />
-                            <input type="hidden" name="grant" value={on ? "0" : "1"} />
-                            <button
-                              className={`relative inline-flex h-7 w-7 items-center justify-center rounded-md border ${on ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-slate-300 hover:border-brand-300"}`}
-                              aria-label={`${on ? "Revoke" : "Grant"} ${p.code} for ${r.name}`}
-                              title={`${on ? "Revoke" : "Grant"}: ${p.name} — ${r.name}`}
-                            >
-                              {on ? <Check className="h-4 w-4" /> : <Minus className="h-3 w-3" />}
-                              {on !== def && <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-amber-500" />}
-                            </button>
-                          </form>
-                        </td>
+                        <label key={p.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-50">
+                          <input type="checkbox" name="perm" value={p.code} defaultChecked={on} className="mt-0.5 h-4 w-4 accent-brand-600" />
+                          <span className="text-sm">
+                            <span className="text-slate-800">{p.name}</span>
+                            {changed && <span className="ml-1 text-[10px] font-semibold uppercase text-amber-600" title="Differs from the default">changed</span>}
+                            <span className="block font-mono text-[10px] text-slate-400">{p.code}</span>
+                          </span>
+                        </label>
                       );
                     })}
-                  </tr>
-                ))}
-              </Fragment>
+                </div>
+              </fieldset>
             ))}
-          </tbody>
-        </table>
+            <div className="sticky bottom-0 -mx-5 border-t border-slate-100 bg-white px-5 py-3">
+              <SubmitButton>Save permissions</SubmitButton>
+            </div>
+          </ActionForm>
+        </Card>
       </div>
-      <p className="mt-3 text-xs text-slate-500">To restore defaults run <code>npm run db:seed -- --reset-permissions</code> on the server.</p>
     </div>
   );
 }

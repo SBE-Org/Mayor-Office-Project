@@ -5,7 +5,7 @@ import { PrintButton } from "@/components/PrintButton";
 import { requireActor } from "@/server/auth/session";
 import { can } from "@/server/access";
 import { prisma } from "@/server/db";
-import { getCase, executives } from "@/server/services/cases";
+import { getCase, executives, caseOfficers } from "@/server/services/cases";
 import { activeCategories, activeDepartments, activeSubCities } from "@/server/services/directory";
 import { NotFoundError } from "@/server/errors";
 import { CONFIDENTIALITY, DECISION_TYPES, PRIORITIES, RESPONSE_TYPES, label } from "@/shared/constants";
@@ -14,6 +14,8 @@ import { ActionForm, SubmitButton } from "@/components/ActionForm";
 import { Badge, Card, DL, Field, PageHeader, Select, Timeline, opts } from "@/components/ui";
 import { DocumentList } from "@/components/DocumentList";
 import * as act from "@/server/actions/cases";
+import { decideCaseAppointmentAction, scheduleCaseAppointmentAction } from "@/server/actions/operations";
+import { SlotPicker } from "@/components/SlotPicker";
 
 export const metadata = { title: "Case" };
 
@@ -39,7 +41,7 @@ export default async function CaseDetail({ params, searchParams }: { params: Pro
     if (e instanceof NotFoundError) notFound();
     throw e;
   }
-  const [cats, depts, subs, execs] = await Promise.all([activeCategories(), activeDepartments(), activeSubCities(), executives()]);
+  const [cats, depts, subs, execs, officers] = await Promise.all([activeCategories(), activeDepartments(), activeSubCities(), executives(), can(a, "case.assign") ? caseOfficers() : Promise.resolve([])]);
   const deptOfficers = c.departmentId && can(a, "case.dept.assign") ? await prisma.user.findMany({ where: { departmentId: c.departmentId, isActive: true }, orderBy: { fullName: "asc" } }) : [];
 
   const s = c.status;
@@ -50,6 +52,9 @@ export default async function CaseDetail({ params, searchParams }: { params: Pro
   const inDept = (c.deptOfficerId === a.id) || (can(a, "case.view.department") && a.departmentId === c.departmentId);
   const deptOpts = depts.map((d) => ({ value: d.id, label: d.name }));
   const lastForward = c.forwardings[c.forwardings.length - 1];
+  const officer = c.assignedOfficer;
+  const canGiveAppointment = !!officer && s !== "CLOSED" && (officer.id === a.id || can(a, "appointment.manage"));
+  const canDecideAppt = (ap: { officialId: string }) => ap.officialId === a.id || can(a, "appointment.manage");
 
   return (
     <div>
@@ -80,7 +85,7 @@ export default async function CaseDetail({ params, searchParams }: { params: Pro
                 ["Category", c.category.name],
                 ["Responsible department", c.department?.name ?? "Mayor's Office"],
                 ["Case officer", c.assignedOfficer?.fullName ?? "—"],
-                ["Department officer", c.deptOfficer?.fullName ?? "—"],
+                ...(c.deptOfficer ? ([["Department officer", c.deptOfficer.fullName]] as [string, string][]) : []),
                 ["With executive", c.executive ? `${c.executive.fullName}` : "—"],
                 ["Response deadline", fmtDate(c.deadline)],
                 ["Handling", label(c.handling)],
@@ -95,6 +100,35 @@ export default async function CaseDetail({ params, searchParams }: { params: Pro
           </Card>
 
           <Card title={`Documents (${c.documents.length})`}><DocumentList docs={c.documents} /></Card>
+
+          <Card title={`Appointments with the case officer (${c.appointments.length})`}>
+            {!officer && <p className="text-sm text-slate-500">No case officer yet. The Head of Office assigns one under “Case officer”.</p>}
+            {officer && !c.appointments.length && <p className="text-sm text-slate-500">No appointments yet. {officer.fullName} can give one, or the citizen can request one from the portal.</p>}
+            {c.appointments.length > 0 && (
+              <ul className="divide-y divide-slate-100">
+                {c.appointments.map((ap) => (
+                  <li key={ap.id} className="py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium">{fmtDateTime(ap.startAt)} · {ap.official.fullName}</p>
+                        <p className="text-xs text-slate-500"><Link href={`/staff/appointments/${ap.id}`} className="link font-mono">{ap.referenceNo}</Link> · {ap.createdById && ap.createdById === c.citizen.userId ? "requested by the citizen" : "given by the office"}</p>
+                      </div>
+                      <Badge value={ap.status} />
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{ap.purpose}</p>
+                    {ap.decisionNote && <p className="mt-1 text-xs text-slate-500">Note: {ap.decisionNote}</p>}
+                    {ap.status === "REQUESTED" && canDecideAppt(ap) && (
+                      <ActionForm action={decideCaseAppointmentAction.bind(null, c.id, ap.id)} className="mt-2 flex flex-wrap items-center gap-2">
+                        <input name="note" placeholder="Note to the citizen (required to reject)" className="input w-72" />
+                        <SubmitButton name="decision" value="approve" className="btn-primary btn-sm">Approve</SubmitButton>
+                        <SubmitButton name="decision" value="reject" className="btn-outline btn-sm">Reject</SubmitButton>
+                      </ActionForm>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
 
           {c.decisions.length > 0 && (
             <Card title="Executive decisions (permanent record)">
@@ -180,6 +214,31 @@ export default async function CaseDetail({ params, searchParams }: { params: Pro
                 <Field label="Deadline (optional)"><input type="date" name="deadline" min={ymd(now)} className="input" /></Field>
                 <p className="text-xs text-slate-500">Decisions are permanent and cannot be edited or deleted.</p>
                 <SubmitButton>Record decision</SubmitButton>
+              </ActionForm>
+            </Panel>
+          )}
+
+          {can(a, "case.assign") && s !== "CLOSED" && (
+            <Panel title="Case officer" open={!officer}>
+              <ActionForm action={act.assignCaseOfficerAction.bind(null, c.id)}>
+                <p className="text-sm text-slate-600">The dedicated person in the Mayor&apos;s Office who follows this case and meets the citizen. The citizen sees the name and can request appointments.</p>
+                <Field label="Case officer"><Select name="officerId" required defaultValue={officer?.id} placeholder="Choose…" options={officers.map((u) => ({ value: u.id, label: `${u.fullName} — ${u.title ?? u.role.name}` }))} /></Field>
+                <SubmitButton>{officer ? "Change case officer" : "Assign case officer"}</SubmitButton>
+              </ActionForm>
+            </Panel>
+          )}
+
+          {canGiveAppointment && officer && (
+            <Panel title="Give the citizen an appointment" open={officer.id === a.id && !c.appointments.some((ap) => ["REQUESTED", "APPROVED"].includes(ap.status))}>
+              <ActionForm action={scheduleCaseAppointmentAction.bind(null, c.id)} resetOnSuccess>
+                <SlotPicker
+                  minDate={ymd(now)}
+                  officials={[{ id: officer.id, name: officer.fullName, title: officer.title }]}
+                  labels={{ official: "With", date: "Date", duration: "Duration", minutes: "minutes", availableSlots: "Free times", noSlots: "No free times on this day (Mon–Fri, 8:00–17:00)." }}
+                />
+                <Field label="Message to the citizen"><textarea name="purpose" rows={2} required minLength={5} placeholder="e.g. Please bring the original documents." className="input" /></Field>
+                <p className="text-xs text-slate-500">The appointment is confirmed immediately and the citizen is notified.</p>
+                <SubmitButton>Give appointment</SubmitButton>
               </ActionForm>
             </Panel>
           )}

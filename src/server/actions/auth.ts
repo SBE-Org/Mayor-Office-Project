@@ -34,7 +34,8 @@ export async function loginAction(_: ActionResult | null, fd: FormData): Promise
   const u = await prisma.user.findUnique({ where: { id: r.userId } });
   if (u?.preferredLanguage) (await cookies()).set("lang", u.preferredLanguage, { path: "/", maxAge: 31536000, sameSite: "lax" });
   const next = str(fd, "next");
-  redirect(u?.mustChangePassword ? "/staff/profile?mustChange=1" : next.startsWith("/") && !next.startsWith("//") ? next : homePath(actor!));
+  const changePath = actor?.permissions.has("portal.citizen") ? "/portal/profile" : "/staff/profile?mustChange=1";
+  redirect(u?.mustChangePassword ? changePath : next.startsWith("/") && !next.startsWith("//") ? next : homePath(actor!));
 }
 
 export async function logoutAction() {

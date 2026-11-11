@@ -56,7 +56,7 @@ export default async function AppointmentsPage({ searchParams }: { searchParams:
           <input type="hidden" name="view" value={view} />
           <input type="hidden" name="date" value={sp.date ?? ""} />
           {(can(a, "appointment.view") || can(a, "appointment.manage")) && (
-            <Select name="officialId" defaultValue={sp.officialId} placeholder="All officials" options={offs.map((o) => ({ value: o.id, label: o.fullName }))} className="w-auto" />
+            <Select name="officialId" defaultValue={sp.officialId} placeholder="All officials" options={offs.map((o) => ({ value: o.id, label: `${o.label} — ${o.fullName}` }))} className="w-auto" />
           )}
           <Select name="status" defaultValue={sp.status} placeholder="Active statuses" options={opts(APPOINTMENT_STATUSES)} className="w-auto" />
           <button className="btn-navy">Apply</button>

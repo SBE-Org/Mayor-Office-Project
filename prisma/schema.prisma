@@ -57,7 +57,9 @@ model User {
   departmentId        String?
   department          Department? @relation(fields: [departmentId], references: [id])
   isActive            Boolean   @default(true)
-  acceptsAppointments Boolean   @default(false)
+  acceptsAppointments Boolean   @default(false) // listed in the citizen "Official" drop-down (managed by the Super Administrator)
+  appointmentLabel    String?   // what citizens see in that drop-down, e.g. "Mayor", "Deputy Mayor – Economic Affairs"
+  appointmentOrder    Int       @default(0)
   preferredLanguage   String    @default("en")
   mustChangePassword  Boolean   @default(false)
   mfaEnabled          Boolean   @default(false)
@@ -107,21 +109,48 @@ model SubCity {
   id          String       @id @default(cuid())
   code        String       @unique
   name        String       @unique
+  mayorName   String?      // Sub-city mayor (shown on every office in this sub-city)
   isActive    Boolean      @default(true)
   departments Department[]
   citizens    Citizen[]
   cases       Case[]
+  woredas     Woreda[]
   createdAt   DateTime     @default(now())
+}
+
+// Woredas and kebeles are maintained by the administrator and offered as
+// drop-down lists wherever a citizen account or citizen record is created.
+model Woreda {
+  id        String   @id @default(cuid())
+  subCityId String
+  subCity   SubCity  @relation(fields: [subCityId], references: [id], onDelete: Cascade)
+  name      String
+  isActive  Boolean  @default(true)
+  kebeles   Kebele[]
+  createdAt DateTime @default(now())
+
+  @@unique([subCityId, name])
+}
+
+model Kebele {
+  id        String   @id @default(cuid())
+  woredaId  String
+  woreda    Woreda   @relation(fields: [woredaId], references: [id], onDelete: Cascade)
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([woredaId, name])
 }
 
 model Department {
   id         String   @id @default(cuid())
   code       String   @unique
   name       String
-  type       String   @default("DEPARTMENT") // DEPARTMENT | SUBCITY_ADMIN | OFFICE
+  type       String   @default("OFFICE") // OFFICE | DEPARTMENT | SUBCITY_ADMIN (new entries are OFFICE)
   subCityId  String?
   subCity    SubCity? @relation(fields: [subCityId], references: [id])
-  headName   String?
+  headName   String?  // name of the head of office representative
   phone      String?
   email      String?
   isActive   Boolean  @default(true)
@@ -146,8 +175,8 @@ model Citizen {
   nationalId   String?
   subCityId    String?
   subCity      SubCity?  @relation(fields: [subCityId], references: [id])
-  woreda       String?
-  kebele       String?
+  woreda       String? // woreda name, chosen from the admin-managed list
+  kebele       String? // kebele name, chosen from the admin-managed list
   address      String?
   registeredById String? // staff member who registered a walk-in citizen
   createdAt    DateTime  @default(now())
@@ -219,6 +248,7 @@ model Case {
   documents    Document[]
   feedback     Feedback[]
   correspondence Correspondence[]
+  appointments Appointment[]
 
   @@index([status])
   @@index([categoryId])
@@ -337,6 +367,8 @@ model Appointment {
   citizen      Citizen   @relation(fields: [citizenId], references: [id])
   officialId   String
   official     User      @relation("AppointmentOfficial", fields: [officialId], references: [id])
+  caseId       String?   // set when the appointment is about a case (given by / requested from the case officer)
+  case         Case?     @relation(fields: [caseId], references: [id])
   category     String
   purpose      String
   startAt      DateTime
@@ -355,6 +387,7 @@ model Appointment {
   documents    Document[]
 
   @@index([officialId, startAt])
+  @@index([caseId])
   @@index([citizenId])
   @@index([status])
 }

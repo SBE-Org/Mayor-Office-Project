@@ -1,19 +1,45 @@
 import { z } from "zod";
 import { prisma, type Tx } from "@/server/db";
-import { appointmentWhere, can, requirePerm, type Actor } from "@/server/access";
+import { appointmentWhere, can, caseWhere, requirePerm, type Actor } from "@/server/access";
 import { AppError, ForbiddenError, NotFoundError } from "@/server/errors";
 import { appointmentRef } from "@/server/refno";
 import { audit } from "@/server/audit";
 import { notifyCitizen, notifyRole, notifyUsers } from "@/server/services/notifications";
 import { citizenInfoSchema } from "@/server/services/cases";
+import { assertLocation } from "@/server/services/directory";
 import { ACTIVE_APPOINTMENT_STATUSES, APPOINTMENT_CATEGORIES, OFFICE_HOURS } from "@/shared/constants";
 
+/** What citizens see for an official in the appointment drop-down. */
+export const officialLabel = (u: { appointmentLabel: string | null; title: string | null; role: { name: string } }) => u.appointmentLabel || u.title || u.role.name;
+
+/**
+ * Officials citizens can request appointments with. The list, its labels (Mayor, Deputy Mayor, …)
+ * and order are managed by the Super Administrator under Appointment officials.
+ */
 export async function officials() {
-  return prisma.user.findMany({
-    where: { isActive: true, acceptsAppointments: true, role: { permissions: { some: { permission: { code: "appointment.own" } } } } },
+  const list = await prisma.user.findMany({
+    where: { isActive: true, acceptsAppointments: true, role: { code: { not: "CITIZEN" } } },
     include: { role: true },
-    orderBy: [{ role: { code: "desc" } }, { fullName: "asc" }],
+    orderBy: [{ appointmentOrder: "asc" }, { fullName: "asc" }],
   });
+  return list.map((u) => ({ ...u, label: officialLabel(u) }));
+}
+
+const officialSettingSchema = z.object({
+  acceptsAppointments: z.boolean(),
+  appointmentLabel: z.string().trim().max(120).optional().transform((v) => v || null),
+  appointmentOrder: z.coerce.number().int().min(0).max(999).default(0),
+});
+
+/** Super Administrator: show / hide an official in the citizen drop-down, set its label and position in the list. */
+export async function setAppointmentOfficial(actor: Actor, userId: string, raw: unknown) {
+  requirePerm(actor, "user.manage");
+  const data = officialSettingSchema.parse(raw);
+  const u = await prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
+  if (!u || u.role.code === "CITIZEN") throw new NotFoundError();
+  if (data.acceptsAppointments && !u.isActive) throw new AppError("Activate the account before listing it for appointments.");
+  await prisma.user.update({ where: { id: userId }, data });
+  await audit(prisma, actor.id, "APPOINTMENT_OFFICIAL_UPDATE", "User", userId, data);
 }
 
 function parseLocal(v: string) {
@@ -88,12 +114,13 @@ export async function requestAppointment(actor: Actor, raw: unknown, citizenRaw?
   const end = validateSlot(start, input.duration);
   const official = (await officials()).find((o) => o.id === input.officialId);
   if (!official) throw new AppError("The selected official does not accept appointments.");
+  const info = isCitizen ? null : citizenInfoSchema.parse(citizenRaw);
+  if (info) await assertLocation(info);
 
   return prisma.$transaction(async (tx) => {
     await assertNoConflict(tx, official.id, start, end);
     let citizenId = actor.citizenId;
-    if (!isCitizen) {
-      const info = citizenInfoSchema.parse(citizenRaw);
+    if (info) {
       const existing = await tx.citizen.findFirst({ where: { phone: info.phone, fullName: info.fullName } });
       citizenId = existing ? existing.id : (await tx.citizen.create({ data: { ...info, registeredById: actor.id } })).id;
     }
@@ -125,6 +152,105 @@ export async function requestAppointment(actor: Actor, raw: unknown, citizenRaw?
   });
 }
 
+// ---------------------------------------------------------------- case appointments (with the case officer)
+
+export const caseAppointmentSchema = z.object({
+  date: z.string().min(1, "Choose a date"),
+  time: z.string().regex(/^\d{2}:\d{2}$/, "Choose a time"),
+  duration: z.coerce.number().refine((n) => n === 30 || n === 60, "Duration must be 30 or 60 minutes").default(30),
+  purpose: z.string().trim().min(5, "Write a short note (at least 5 characters)").max(2000),
+});
+
+async function caseForAppointment(actor: Actor, caseId: string) {
+  const c = await prisma.case.findFirst({ where: { AND: [{ id: caseId }, caseWhere(actor)] }, include: { assignedOfficer: true } });
+  if (!c) throw new NotFoundError();
+  if (c.status === "CLOSED") throw new AppError("This case is closed.");
+  if (!c.assignedOfficer || !c.assignedOfficer.isActive) throw new AppError("A case officer has not been assigned to this case yet.");
+  return { ...c, assignedOfficer: c.assignedOfficer };
+}
+
+async function logCase(tx: Tx, caseId: string, actor: Actor, action: string, note: string) {
+  await tx.caseAction.create({ data: { caseId, actorId: actor.id, actorName: `${actor.fullName} (${actor.roleName})`, action, note, isPublic: true } });
+}
+
+const when = (d: Date) => d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+
+/** The case officer (or appointment manager) gives the citizen an appointment. Confirmed immediately. */
+export async function scheduleCaseAppointment(actor: Actor, caseId: string, raw: unknown) {
+  const input = caseAppointmentSchema.parse(raw);
+  if (can(actor, "portal.citizen")) throw new ForbiddenError();
+  const c = await caseForAppointment(actor, caseId);
+  if (c.assignedOfficerId !== actor.id && !can(actor, "appointment.manage")) throw new ForbiddenError("Only the case officer can give an appointment for this case.");
+  const start = parseLocal(`${input.date}T${input.time}:00`);
+  const end = validateSlot(start, input.duration);
+  return prisma.$transaction(async (tx) => {
+    await assertNoConflict(tx, c.assignedOfficer.id, start, end);
+    const a = await tx.appointment.create({
+      data: {
+        referenceNo: await appointmentRef(tx),
+        citizenId: c.citizenId,
+        officialId: c.assignedOfficer.id,
+        caseId: c.id,
+        category: "PERSONAL_CASE",
+        purpose: input.purpose,
+        startAt: start,
+        endAt: end,
+        status: "APPROVED",
+        decidedById: actor.id,
+        decidedAt: new Date(),
+        createdById: actor.id,
+      },
+    });
+    await logCase(tx, c.id, actor, "Appointment given", `${when(start)} with ${c.assignedOfficer.fullName} (${a.referenceNo}). ${input.purpose}`);
+    await audit(tx, actor.id, "CASE_APPOINTMENT_GIVEN", "Appointment", a.id, { caseId: c.id, start });
+    await notifyCitizen(tx, c.citizenId, {
+      title: `Appointment for case ${c.referenceNo}`,
+      body: `You have an appointment with ${c.assignedOfficer.fullName} on ${when(start)}. ${input.purpose}`,
+      link: `/portal/cases/${c.id}`,
+    });
+    if (c.assignedOfficer.id !== actor.id) await notifyUsers(tx, [c.assignedOfficer.id], { title: `Appointment ${a.referenceNo} for case ${c.referenceNo}`, body: when(start), link: `/staff/cases/${c.id}` });
+    return a;
+  });
+}
+
+/** The citizen asks the case officer for an appointment; the officer approves or rejects it. */
+export async function requestCaseAppointment(actor: Actor, caseId: string, raw: unknown) {
+  requirePerm(actor, "portal.citizen");
+  const input = caseAppointmentSchema.parse(raw);
+  const c = await caseForAppointment(actor, caseId);
+  if (await prisma.appointment.findFirst({ where: { caseId: c.id, status: "REQUESTED" } })) throw new AppError("You already have an appointment request waiting for the case officer.");
+  const start = parseLocal(`${input.date}T${input.time}:00`);
+  const end = validateSlot(start, input.duration);
+  return prisma.$transaction(async (tx) => {
+    await assertNoConflict(tx, c.assignedOfficer.id, start, end);
+    const a = await tx.appointment.create({
+      data: {
+        referenceNo: await appointmentRef(tx),
+        citizenId: c.citizenId,
+        officialId: c.assignedOfficer.id,
+        caseId: c.id,
+        category: "PERSONAL_CASE",
+        purpose: input.purpose,
+        startAt: start,
+        endAt: end,
+        status: "REQUESTED",
+        createdById: actor.id,
+      },
+    });
+    await logCase(tx, c.id, actor, "Appointment requested", `${when(start)} (${a.referenceNo}). Waiting for the case officer.`);
+    await audit(tx, actor.id, "CASE_APPOINTMENT_REQUEST", "Appointment", a.id, { caseId: c.id, start });
+    await notifyUsers(tx, [c.assignedOfficer.id], { title: `Appointment request for case ${c.referenceNo}`, body: `${when(start)}: ${input.purpose.slice(0, 150)}`, link: `/staff/cases/${c.id}` });
+    return a;
+  });
+}
+
+/** Appointments belonging to one case (checked against case visibility). */
+export async function caseAppointments(actor: Actor, caseId: string) {
+  const c = await prisma.case.findFirst({ where: { AND: [{ id: caseId }, caseWhere(actor)] }, select: { id: true } });
+  if (!c) throw new NotFoundError();
+  return prisma.appointment.findMany({ where: { caseId }, include: { official: true }, orderBy: { startAt: "asc" } });
+}
+
 export async function listAppointments(actor: Actor, f: { from?: Date; to?: Date; officialId?: string; status?: string } = {}) {
   return prisma.appointment.findMany({
     where: {
@@ -151,7 +277,8 @@ export async function getAppointment(actor: Actor, id: string) {
 async function loadManageable(tx: Tx, actor: Actor, id: string) {
   const a = await tx.appointment.findFirst({ where: { AND: [{ id }, appointmentWhere(actor)] }, include: { official: true } });
   if (!a) throw new NotFoundError();
-  const isOwn = can(actor, "appointment.own") && a.officialId === actor.id;
+  // Officials manage their own calendar; a case officer manages the appointments of their cases.
+  const isOwn = a.officialId === actor.id && (can(actor, "appointment.own") || !!a.caseId || a.official.acceptsAppointments);
   if (!can(actor, "appointment.manage") && !isOwn) throw new ForbiddenError();
   return a;
 }
@@ -170,8 +297,12 @@ export async function decideAppointment(actor: Actor, id: string, approve: boole
       body: approve
         ? `Confirmed with ${a.official.fullName} on ${a.startAt.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}.${note ? " " + note : ""}`
         : `Reason: ${note}`,
-      link: `/portal/appointments`,
+      link: a.caseId ? `/portal/cases/${a.caseId}` : `/portal/appointments`,
     });
+    if (a.caseId)
+      await tx.caseAction.create({
+        data: { caseId: a.caseId, actorId: actor.id, actorName: `${actor.fullName} (${actor.roleName})`, action: approve ? "Appointment request approved" : "Appointment request not approved", note: approve ? `${when(a.startAt)} (${a.referenceNo})` : `Reason: ${note}`, isPublic: true },
+      });
     if (approve) await notifyUsers(tx, [a.officialId], { title: `Appointment confirmed ${a.referenceNo}`, body: a.purpose.slice(0, 150), link: `/staff/appointments/${id}` });
   });
 }

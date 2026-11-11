@@ -10,13 +10,17 @@ Forgotten passwords: the administrator opens **Users → Manage → Reset passwo
 
 | Task | Where |
 |---|---|
-| Create a staff account, set role, department, position and whether they receive appointments | Users |
-| Deactivate an account (signs it out immediately) | Users → Manage → untick *Active* |
-| Grant or revoke a permission for a role | Roles & permissions — click a cell. An amber dot marks a difference from the default |
-| Add or edit departments, sub-city administrations and sub-cities | Departments |
+| Create a staff account, set role, department / office, position and whether they receive appointments | Accounts → Staff |
+| Create a portal account for a case owner (citizen); earlier walk-in cases with the same name and phone are linked automatically | Accounts → Case owners (citizens) |
+| Deactivate or reset the password of a case-owner account | Accounts → Case owners → Manage |
+| Deactivate a staff account (signs it out immediately) | Accounts → Staff → Manage → untick *Active* |
+| Choose who citizens can request appointments with, how each appears in the "Official" drop-down (e.g. Mayor, Deputy Mayor – Economic Affairs) and in what order | Appointment officials |
+| Grant or revoke permissions for a role | Roles & permissions — choose the role, tick or untick permissions, press **Save permissions**. "Changed" marks a difference from the default; **Restore defaults** resets the role |
+| Add or edit offices: office name, head of office representative, sub-city (drop-down) and sub-city mayor. The office code (OFF-001, OFF-002 …) is generated automatically | Departments / offices |
+| Add sub-cities and their mayors, and the woredas and kebeles of each sub-city (several at once, separated by commas). These are the drop-down lists used when citizens create an account and when staff register walk-in cases and visitors | Sub-cities, woredas & kebeles |
 | Edit case categories, their default office and response deadline (with Afaan Oromoo and Amharic names) | Case categories |
 | Add rooms and halls and name the calendar manager | Facilities |
-| Review security events, logins and changes | Audit log, System administration dashboard |
+| Review security events, logins and changes | Audit log |
 
 **Adding a Deputy Mayor:** create a user with role *Deputy Mayor*, give them a position title (for example "Deputy Mayor, Economic Affairs") and tick *Receives appointment requests*. They then appear in the forwarding list, the delegation list and the citizen appointment form.
 
@@ -33,11 +37,13 @@ The Super Administrator role cannot see case content by default. This is intenti
 - Decisions are permanent. They cannot be edited or deleted.
 - The Mayor also sees cases forwarded to the Deputy Mayors and may act on them.
 
-## Head of Office, Secretary, Assistant — Office dashboard
+## Head of Office and Secretary — Office dashboard
 
-- **Register case** is for walk-in, phone or mail submissions. Give the citizen the reference number shown after saving. They can follow progress at `/track` using that number and their phone number.
+- **Register case** is for walk-in, phone or mail submissions. Give the citizen the reference number shown after saving. They can follow progress at `/track` using either that number or their phone number. If several submissions share the phone number, the citizen picks one from a list of reference numbers.
 - **Online submissions to verify:** open the case and click *Verify & register*.
-- **Review & assess** (Head of Office, Review Officer): set category, priority, confidentiality and handling, and write the assessment.
+- **Review & assess** (Head of Office): set category, priority, confidentiality and handling, and write the assessment.
+- **Case officer** (Head of Office): name the dedicated person in the Mayor's Office for the case (Head of Office or Secretary). The citizen sees the name on their case page.
+- **Case appointments:** the case officer opens the case and uses *Give the citizen an appointment* (confirmed immediately; the citizen is notified). The citizen can also *request* an appointment from their case page; it appears under *Appointments with the case officer* on the staff case page, where the officer approves it, or rejects it with a reason. All case appointments also appear on the Appointments page and the citizen's *My appointments*.
 - Then one of:
   - *Assign to department*, with a deadline.
   - *Forward to Mayor / Deputy Mayor*, with summary, recommendation and reason.
@@ -50,16 +56,15 @@ The Super Administrator role cannot see case content by default. This is intenti
   - On the day, reception uses *Check in visitor*. After the meeting, record the outcome and follow-up actions.
 - **Walk-in visitor** books a slot for someone without an account. Already-booked times cannot be chosen.
 
-## Department heads and officers
+## Department heads
 
 - The Department dashboard lists open cases, earliest deadline first.
-- Heads *allocate* a case to an officer.
-- Heads and the allocated officer submit responses:
+- Department heads submit responses:
   - *Progress*: an update.
   - *Info request*: asks the Mayor's Office for clarification.
   - *Completed*: reports the action taken. The office then verifies and closes the case.
 
-## Document Management Officer
+## Correspondence (Secretary and Head of Office)
 
 - **Correspondence → Register letter.** Numbers are assigned automatically (`IN/2026/0001`, `OUT/2026/0001`).
 - Link a letter to a case by entering the case reference.

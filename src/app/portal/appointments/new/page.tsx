@@ -27,8 +27,8 @@ export default async function NewCitizenAppointment() {
         <ActionForm action={requestAppointmentAction}>
           <SlotPicker
             minDate={ymd(new Date())}
-            officials={offs.map((o) => ({ id: o.id, name: o.fullName, title: o.title }))}
-            labels={{ official: t.official, date: t.date, duration: t.duration, minutes: t.minutes, availableSlots: t.availableSlots, noSlots: t.noSlots }}
+            officials={offs.map((o) => ({ id: o.id, name: o.label, title: null }))}
+            labels={{ official: t.official, date: t.date, duration: t.duration, minutes: t.minutes, availableSlots: t.availableSlots, noSlots: t.noSlots, chooseOfficial: t.chooseOfficial, noOfficials: t.noOfficials }}
           />
           <Field label={t.category}>
             <select name="category" className="input">{Object.entries(CATS).map(([k, v]) => <option key={k} value={k}>{v[lang]}</option>)}</select>

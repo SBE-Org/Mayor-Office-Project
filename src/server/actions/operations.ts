@@ -21,7 +21,7 @@ export async function requestAppointmentAction(_: A, fd: FormData): Promise<Acti
     const r = await appt.requestAppointment(
       a,
       formObject(fd, ["officialId", "category", "purpose", "date", "time", "duration"]),
-      formObject(fd, ["fullName", "phone", "email", "subCityId"]),
+      formObject(fd, ["fullName", "phone", "email", "subCityId", "woreda", "kebele"]),
     );
     if (!a.permissions.has("portal.citizen")) target = `/staff/appointments/${r.id}`;
     void dispatchOutbound().catch(() => {});
@@ -29,6 +29,41 @@ export async function requestAppointmentAction(_: A, fd: FormData): Promise<Acti
     return { ok: false, error: userMessage(e) };
   }
   redirect(target);
+}
+
+const caseApptPaths = (caseId: string) => [`/staff/cases/${caseId}`, `/portal/cases/${caseId}`, ...APPT_PATHS];
+
+export async function scheduleCaseAppointmentAction(caseId: string, _: A, fd: FormData) {
+  const a = await requireActor();
+  return run(
+    () => appt.scheduleCaseAppointment(a, caseId, formObject(fd, ["date", "time", "duration", "purpose"])).then((r) => `Appointment ${r.referenceNo} given. The citizen has been notified.`),
+    caseApptPaths(caseId),
+  );
+}
+
+export async function requestCaseAppointmentAction(caseId: string, _: A, fd: FormData) {
+  const a = await requireActor("portal.citizen");
+  return run(
+    () => appt.requestCaseAppointment(a, caseId, formObject(fd, ["date", "time", "duration", "purpose"])).then((r) => `Request ${r.referenceNo} sent to your case officer. You will be notified when it is approved.`),
+    caseApptPaths(caseId),
+  );
+}
+
+export async function setAppointmentOfficialAction(userId: string, _: A, fd: FormData) {
+  const a = await requireActor("user.manage");
+  return run(
+    () =>
+      appt
+        .setAppointmentOfficial(a, userId, { acceptsAppointments: bool(fd, "acceptsAppointments"), appointmentLabel: str(fd, "appointmentLabel"), appointmentOrder: str(fd, "appointmentOrder") || "0" })
+        .then(() => "Saved."),
+    ["/staff/admin/appointment-officials", "/portal/appointments/new", "/staff/appointments/new", "/staff/appointments"],
+  );
+}
+
+export async function decideCaseAppointmentAction(caseId: string, id: string, _: A, fd: FormData) {
+  const a = await requireActor();
+  const approve = str(fd, "decision") === "approve";
+  return run(() => appt.decideAppointment(a, id, approve, str(fd, "note")).then(() => (approve ? "Appointment approved. The citizen has been notified." : "Request rejected. The citizen has been told why.")), [...caseApptPaths(caseId), `/staff/appointments/${id}`]);
 }
 
 export async function decideAppointmentAction(id: string, _: A, fd: FormData) {

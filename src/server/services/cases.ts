@@ -6,6 +6,7 @@ import { caseRef } from "@/server/refno";
 import { audit } from "@/server/audit";
 import { saveFile } from "@/server/storage";
 import { notifyCitizen, notifyRole, notifyUsers } from "@/server/services/notifications";
+import { assertLocation } from "@/server/services/directory";
 import { CASE_CHANNELS, CASE_TYPES, CONFIDENTIALITY, DECISION_TYPES, PRIORITIES, RESPONSE_TYPES, type CaseStatus } from "@/shared/constants";
 
 type Upload = { name: string; buf: Buffer };
@@ -21,8 +22,8 @@ export const citizenInfoSchema = z.object({
   phone: z.string().trim().regex(/^\+?[0-9 ]{9,15}$/, "Enter a valid phone number"),
   email: z.string().trim().email().optional().or(z.literal("").transform(() => undefined)),
   subCityId: z.string().optional().transform((v) => v || undefined),
-  woreda: z.string().trim().max(60).optional(),
-  kebele: z.string().trim().max(60).optional(),
+  woreda: z.string().trim().max(60).optional().transform((v) => v || undefined),
+  kebele: z.string().trim().max(60).optional().transform((v) => v || undefined),
 });
 
 export const submitCaseSchema = z.object({
@@ -80,10 +81,11 @@ export async function submitCase(actor: Actor, raw: unknown, files: Upload[] = [
   const category = await prisma.caseCategory.findFirst({ where: { id: input.categoryId, isActive: true } });
   if (!category) throw new AppError("Unknown case category.");
 
+  const citizenInfo = isStaff ? citizenInfoSchema.parse(citizenRaw) : null;
+  if (citizenInfo) await assertLocation(citizenInfo);
+
   const created = await prisma.$transaction(async (tx) => {
-    const citizenId = isStaff
-      ? (await findCitizenOrCreate(tx, actor, citizenInfoSchema.parse(citizenRaw))).id
-      : actor.citizenId!;
+    const citizenId = citizenInfo ? (await findCitizenOrCreate(tx, actor, citizenInfo)).id : actor.citizenId!;
     const status: CaseStatus = isStaff ? "REGISTERED" : "SUBMITTED";
     const c = await tx.case.create({
       data: {
@@ -159,14 +161,50 @@ export async function getCase(actor: Actor, id: string) {
       responses: { include: { department: true }, orderBy: { createdAt: "asc" } },
       assignments: { include: { department: true }, orderBy: { createdAt: "asc" } },
       feedback: true,
+      appointments: { include: { official: { select: { id: true, fullName: true, title: true } } }, orderBy: { startAt: "asc" } },
     },
   });
   if (!c) throw new NotFoundError();
+  // The case officer's name and position are shown to the citizen so they know who will meet them.
+  const caseOfficer = c.assignedOfficer ? { id: c.assignedOfficer.id, fullName: c.assignedOfficer.fullName, title: c.assignedOfficer.title } : null;
   if (isCitizen) {
     // Citizens see their own submission and public progress only.
-    return { ...c, forwardings: [], decisions: [], responses: [], assessment: null, recommendation: null, assignedOfficer: null, deptOfficer: null, executive: null };
+    return { ...c, caseOfficer, forwardings: [], decisions: [], responses: [], assessment: null, recommendation: null, assignedOfficer: null, deptOfficer: null, executive: null };
   }
-  return c;
+  return { ...c, caseOfficer };
+}
+
+/** Mayor's Office staff who can act as case officer (anyone whose role has "View cases personally assigned"). */
+export function caseOfficers() {
+  return prisma.user.findMany({
+    where: { isActive: true, role: { code: { not: "CITIZEN" }, permissions: { some: { permission: { code: "case.view.assigned" } } } } },
+    include: { role: true },
+    orderBy: { fullName: "asc" },
+  });
+}
+
+/** The Head of Office (case.assign) names the dedicated case officer in the Mayor's Office. */
+export async function assignCaseOfficer(actor: Actor, id: string, officerId: string) {
+  requirePerm(actor, "case.assign");
+  const officer = (await caseOfficers()).find((o) => o.id === officerId);
+  if (!officer) throw new AppError("Choose a Mayor's Office staff member as case officer.");
+  return prisma.$transaction(async (tx) => {
+    const c = await loadForAction(tx, actor, id);
+    if (c.status === "CLOSED") throw new AppError("Reopen the case before assigning a case officer.");
+    if (c.assignedOfficerId === officer.id) return;
+    await tx.case.update({ where: { id }, data: { assignedOfficerId: officer.id } });
+    await log(tx, id, actor, c.assignedOfficerId ? "Case officer changed" : "Case officer assigned", {
+      note: `${officer.fullName}${officer.title ? `, ${officer.title}` : ""}. The case officer can give you an appointment, or you can request one from this page.`,
+      isPublic: true,
+    });
+    await audit(tx, actor.id, "CASE_OFFICER_ASSIGN", "Case", id, { officerId: officer.id, previous: c.assignedOfficerId });
+    await notifyUsers(tx, [officer.id], { title: `You are case officer for ${c.referenceNo}`, body: c.title, link: `/staff/cases/${id}` });
+    await notifyCitizen(tx, c.citizenId, {
+      title: `Case officer assigned to ${c.referenceNo}`,
+      body: `${officer.fullName} will handle your case at the Mayor's Office. You can request an appointment from the case page.`,
+      link: `/portal/cases/${id}`,
+    });
+  });
 }
 
 async function loadForAction(tx: Tx, actor: Actor, id: string, allowed?: CaseStatus[]) {
@@ -490,12 +528,49 @@ export async function submitFeedback(actor: Actor, id: string, rating: number, c
   await prisma.feedback.create({ data: { caseId: id, citizenId: c.citizenId, rating, comment: comment?.trim() || null } });
 }
 
-/** Public tracking: reference number + phone number, public history only. */
-export async function trackCase(referenceNo: string, phone: string) {
-  const c = await prisma.case.findFirst({
-    where: { referenceNo: referenceNo.trim().toUpperCase(), citizen: { phone: phone.trim() } },
-    include: { category: true, actions: { where: { isPublic: true }, orderBy: { createdAt: "asc" } } },
-  });
-  if (!c) return null;
-  return { referenceNo: c.referenceNo, title: c.confidentiality === "NORMAL" ? c.title : "Confidential matter", status: c.status, category: c.category.name, createdAt: c.createdAt, actions: c.actions.map((a) => ({ action: a.action, note: a.note, createdAt: a.createdAt })) };
+/** Phone spellings that refer to the same Ethiopian number: 0911..., +251911..., 251911... */
+export function phoneVariants(raw: string): string[] {
+  const p = raw.replace(/[\s-]/g, "");
+  const out = new Set([raw.trim(), p]);
+  const local = p.startsWith("+251") ? p.slice(4) : p.startsWith("251") ? p.slice(3) : p.startsWith("0") ? p.slice(1) : p;
+  if (/^[0-9]{9}$/.test(local)) for (const v of [`0${local}`, `+251${local}`, `251${local}`]) out.add(v);
+  return [...out].filter(Boolean);
+}
+
+const publicTitle = (c: { title: string; confidentiality: string }) => (c.confidentiality === "NORMAL" ? c.title : "Confidential matter");
+
+export type TrackMatch = { referenceNo: string; title: string; type: string; category: string; status: string; createdAt: Date };
+export type TrackResult = { referenceNo: string; title: string; status: string; category: string; createdAt: Date; actions: { action: string; note: string | null; createdAt: Date }[] };
+
+/**
+ * Public tracking with EITHER the reference number OR the phone number used when submitting.
+ *  - reference number            -> that case
+ *  - phone number, one case      -> that case
+ *  - phone number, several cases -> list of reference numbers with short details to choose from
+ * Only the public history is ever returned.
+ */
+export async function trackCase(q: { referenceNo?: string; phone?: string }): Promise<{ result: TrackResult } | { matches: TrackMatch[] } | null> {
+  const ref = q.referenceNo?.trim().toUpperCase();
+  const phone = q.phone?.trim();
+  if (!ref && !phone) return null;
+  const where = {
+    ...(ref ? { referenceNo: ref } : {}),
+    ...(phone ? { citizen: { phone: { in: phoneVariants(phone) } } } : {}),
+  };
+  const found = await prisma.case.findMany({ where, include: { category: true }, orderBy: { createdAt: "desc" }, take: 50 });
+  if (!found.length) return null;
+  if (found.length > 1)
+    return { matches: found.map((c) => ({ referenceNo: c.referenceNo, title: publicTitle(c), type: c.type, category: c.category.name, status: c.status, createdAt: c.createdAt })) };
+  const c = found[0];
+  const actions = await prisma.caseAction.findMany({ where: { caseId: c.id, isPublic: true }, orderBy: { createdAt: "asc" } });
+  return {
+    result: {
+      referenceNo: c.referenceNo,
+      title: publicTitle(c),
+      status: c.status,
+      category: c.category.name,
+      createdAt: c.createdAt,
+      actions: actions.map((a) => ({ action: a.action, note: a.note, createdAt: a.createdAt })),
+    },
+  };
 }
