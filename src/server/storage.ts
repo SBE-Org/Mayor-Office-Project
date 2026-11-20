@@ -6,6 +6,33 @@ import { AppError } from "@/server/errors";
 
 export const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 
+// STORAGE_DRIVER=local (default): files on disk in STORAGE_DIR (local dev, Docker, VPS).
+// STORAGE_DRIVER=supabase: private Supabase Storage bucket (Vercel and other serverless hosts).
+// The bucket must be PRIVATE; files are only served through /api/files/[id], which checks access.
+const driver = () => {
+  const d = (process.env.STORAGE_DRIVER ?? "").trim().replace(/^["']|["']$/g, "").toLowerCase();
+  if (d === "supabase") return "supabase";
+  // Vercel's disk is read-only/temporary: fail with a clear message instead of a mkdir error.
+  if (process.env.VERCEL) throw new AppError("File storage is misconfigured: set STORAGE_DRIVER=supabase in the Vercel environment variables (and remove STORAGE_DIR).");
+  return "local";
+};
+
+function supabase() {
+  const base = process.env.SUPABASE_URL?.trim().replace(/\/+$/, "");
+  const key = process.env.SUPABASE_SERVICE_KEY?.trim();
+  const bucket = process.env.SUPABASE_BUCKET?.trim() || "smo-documents";
+  if (!base || !key) throw new AppError("File storage is not configured (SUPABASE_URL / SUPABASE_SERVICE_KEY).");
+  // Legacy service_role keys are JWTs and go in Authorization too; new sb_secret_ keys use apikey only.
+  const headers: Record<string, string> = { apikey: key };
+  if (key.startsWith("eyJ")) headers.Authorization = `Bearer ${key}`;
+  return { url: `${base}/storage/v1/object/${bucket}`, headers };
+}
+
+function maxBytes() {
+  const mb = Number(process.env.UPLOAD_MAX_MB);
+  return Number.isFinite(mb) && mb > 0 ? mb * 1024 * 1024 : UPLOAD.maxBytes;
+}
+
 export type StoredFile = { fileName: string; storedName: string; mimeType: string; size: number; sha256: string };
 
 // Magic-byte signatures so a renamed executable cannot be uploaded as a PDF/image.
@@ -20,7 +47,7 @@ function sniff(buf: Buffer): string | null {
 
 export function validateUpload(name: string, buf: Buffer) {
   if (buf.length === 0) throw new AppError(`File "${name}" is empty.`);
-  if (buf.length > UPLOAD.maxBytes) throw new AppError(`File "${name}" exceeds the 10 MB limit.`);
+  if (buf.length > maxBytes()) throw new AppError(`File "${name}" exceeds the ${Math.round(maxBytes() / 1024 / 1024)} MB limit.`);
   const ext = path.extname(name).toLowerCase();
   const mime = sniff(buf);
   if (!mime || !UPLOAD.allowed[mime]?.includes(ext)) {
@@ -31,16 +58,35 @@ export function validateUpload(name: string, buf: Buffer) {
 
 export async function saveFile(name: string, buf: Buffer): Promise<StoredFile> {
   const mimeType = validateUpload(name, buf);
-  await fs.mkdir(STORAGE_DIR, { recursive: true });
   const storedName = `${crypto.randomUUID()}${path.extname(name).toLowerCase()}`;
-  await fs.writeFile(path.join(STORAGE_DIR, storedName), buf);
+  if (driver() === "supabase") {
+    const sb = supabase();
+    const res = await fetch(`${sb.url}/${storedName}`, {
+      method: "POST",
+      headers: { ...sb.headers, "content-type": mimeType, "x-upsert": "false" },
+      body: new Uint8Array(buf),
+    });
+    if (!res.ok) {
+      console.error("Supabase upload failed", res.status, await res.text().catch(() => ""));
+      throw new AppError("The document could not be stored. Please try again.");
+    }
+  } else {
+    await fs.mkdir(STORAGE_DIR, { recursive: true });
+    await fs.writeFile(path.join(STORAGE_DIR, storedName), buf);
+  }
   const safeName = path.basename(name).replace(/[^\w.\- ()]/g, "_").slice(0, 150);
   return { fileName: safeName, storedName, mimeType, size: buf.length, sha256: crypto.createHash("sha256").update(buf).digest("hex") };
 }
 
-export async function readStoredFile(storedName: string) {
-  const p = path.join(STORAGE_DIR, path.basename(storedName));
-  return fs.readFile(p);
+export async function readStoredFile(storedName: string): Promise<Buffer> {
+  const safe = path.basename(storedName);
+  if (driver() === "supabase") {
+    const sb = supabase();
+    const res = await fetch(`${sb.url}/${safe}`, { headers: sb.headers, cache: "no-store" });
+    if (!res.ok) throw new AppError("The document could not be retrieved.");
+    return Buffer.from(await res.arrayBuffer());
+  }
+  return fs.readFile(path.join(STORAGE_DIR, safe));
 }
 
 /** Extract uploaded files from FormData (field name "files"). */
